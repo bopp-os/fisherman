@@ -179,8 +179,8 @@ func (r *Recipe) Validate() error {
 // Problems runs every recipe rule (rules.go) plus the existence checks for
 // the disk, the customMounts partitions and the varDisk, and returns every
 // problem found, in a stable order: the layout first, then imageType,
-// bootloader, encryption, varDisk, hostname, user, distroID and brewTap. It
-// does not check the TPM, which needs the machine; see CheckTPM.
+// bootloader, encryption, varDisk, hostname, user, distroID, brewTap and
+// slurp. It does not check the TPM, which needs the machine; see CheckTPM.
 func (r *Recipe) Problems() []Problem {
 	var ps []Problem
 	if len(r.CustomMounts) > 0 {
@@ -268,5 +268,6 @@ func (r *Recipe) Problems() []Problem {
 	// shell script, so they are refused before any disk step too.
 	ps = append(ps, CheckDistroID(r.DistroID)...)
 	ps = append(ps, CheckBrewTap(r.BrewTap)...)
+	ps = append(ps, CheckSlurp(r.Slurp)...)
 	return ps
 }
