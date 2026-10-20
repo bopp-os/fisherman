@@ -718,10 +718,9 @@ func main() {
 	if err != nil {
 		fatal("preparing scratch dir: %v", err)
 	}
-	// Note: bootc container gets this directory mounted at /var/tmp via -v flag in podman call.
-	// The container runs in its own mount namespace, so the host-level /var/tmp mount is not
-	// necessary. We skip it here to avoid conflicts when /var/tmp is already a separate
-	// filesystem on the host.
+	// The bootc container receives scratch at /var/tmp. Its launcher also
+	// redirects host-side OCI staging while podman creates the container:
+	// that import runs before the container's scratch bind mount exists.
 	//
 	// For the live-ISO path scratchDir is on the target disk and removal is
 	// handled by cleanup.AddPostRemoval (registered in prepareScratchDir),

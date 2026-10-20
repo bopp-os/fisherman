@@ -448,16 +448,14 @@ func bootcViaContainer(opts Options) error {
 
 	scratch := opts.scratchDir()
 
-	// Non-composefs (ostree/grub2): the default VFS storage driver copies every
-	// image layer byte-for-byte when preparing the bootc container, which OOM-kills
-	// VMs on large images (>4 GB).  Probe whether the target scratch filesystem
-	// supports overlay and redirect podman storage there via --root.  Overlay
-	// avoids the copy entirely — working layers are created via mount namespaces —
-	// eliminating the memory pressure that kills podman during bootc install.
+	// Keep OCI imports and constrained live stores on the target disk rather
+	// than unpacking the bootc image into the RAM-backed live overlay. Prefer
+	// overlay when supported; an OCI source still needs disk-backed VFS when
+	// overlay is unavailable.
 	var nonComposefsRoot, nonComposefsRunRoot, nonComposefsDriver string
-	if !opts.ComposeFsBackend && !ociSource && storageSpaceConstrainedFn() {
+	if !opts.ComposeFsBackend && (ociSource || storageSpaceConstrainedFn()) {
 		driver, reason := selectStorageDriverFn(scratch)
-		if driver == "overlay" {
+		if driver == "overlay" || ociSource {
 			progress.Substep(fmt.Sprintf("Redirecting podman storage to target disk with %s driver (%s)", driver, reason))
 			nonComposefsRoot = filepath.Join(scratch, "containers-root")
 			// Keep graphroot and runroot together.  Skopeo's containers-storage
@@ -471,9 +469,9 @@ func bootcViaContainer(opts Options) error {
 			if err := os.RemoveAll(nonComposefsRunRoot); err != nil && !os.IsNotExist(err) {
 				progress.Substep(fmt.Sprintf("Warning: could not clear previous podman runroot: %v", err))
 			}
-			// Only re-pull when the source is a registry URL.  containers-storage:
-			// images are already local; they get exported to OCI layout instead.
-			if !strings.HasPrefix(opts.SourceImgref, "containers-storage:") {
+			// Only registry sources need a pull. OCI layouts are imported by
+			// podman below; containers-storage sources are exported instead.
+			if !localSource {
 				opts.NeedsPull = true
 			}
 		} else {
@@ -536,9 +534,11 @@ func bootcViaContainer(opts Options) error {
 		podmanImageRef = opts.SourceImgref
 	}
 
-	if useOciLayout && !ociSource {
-		ociCacheHost := filepath.Join(scratch, "oci-cache")
-		podmanImageRef = "oci:" + ociCacheHost
+	if useOciLayout {
+		if !ociSource {
+			ociCacheHost := filepath.Join(scratch, "oci-cache")
+			podmanImageRef = "oci:" + ociCacheHost
+		}
 
 		var containersRoot, storageDriver string
 		if opts.ComposeFsBackend {
@@ -649,10 +649,21 @@ func bootcViaContainer(opts Options) error {
 	podmanArgs = append(podmanArgs, "bootc")
 	podmanArgs = append(podmanArgs, bootcArgs...)
 
-	name, args := runner.HostArgs("podman", podmanArgs)
+	var tmpEnv []string
+	if useOciLayout {
+		// Podman imports OCI blobs before the container's scratch bind exists.
+		// containers/image can use /var/tmp regardless of TMPDIR.
+		restoreVarTmp := overrideVarTmp(scratch)
+		defer restoreVarTmp()
+		tmpEnv = []string{"TMPDIR=" + scratch}
+	}
+	name, args := runner.HostArgsWithEnv("podman", podmanArgs, tmpEnv)
 	fmt.Fprintf(os.Stdout, "+ %s %s\n", name, strings.Join(args, " "))
 
 	cmd := CommandFn(name, args...)
+	if len(tmpEnv) != 0 {
+		cmd.Env = append(os.Environ(), tmpEnv...)
+	}
 	if err := runWithSubsteps(cmd); err != nil {
 		return fmt.Errorf("bootc install to-filesystem (via container): %w", err)
 	}
