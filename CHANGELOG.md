@@ -105,6 +105,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 🐛 Bug Fixes
 
+- **Offline OCI imports use target-disk scratch** (#345): Podman's image store,
+  runtime state, and host-side blob staging no longer fill the RAM-backed live
+  filesystem before the bootc container starts. This also covers the VFS
+  fallback and preserves the verified local OCI source without a registry pull.
 - **A requested data migration is refused before any disk work** (#245):
   `slurp` copied the selected Windows data into RAM only, and an extraction
   error or partial copy was logged as "skipped" while the install went on to
