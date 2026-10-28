@@ -494,7 +494,15 @@ func bootcViaContainer(opts Options) error {
 	useOciLayout := opts.ComposeFsBackend || nonComposefsRoot != ""
 
 	if opts.NeedsPull {
-		if err := pullImage(opts.SourceImgref, opts.LayerCount, nonComposefsRoot, nonComposefsRunRoot, nonComposefsDriver); err != nil {
+		// podman unpacks each layer into /var/tmp first; on live media that is
+		// RAM, so a multi-GB layer fails the pull part-way. Put it on the target disk.
+		restorePullTmp := func() {}
+		if nonComposefsRoot != "" {
+			restorePullTmp = overrideVarTmp(scratch)
+		}
+		err := pullImage(opts.SourceImgref, opts.LayerCount, nonComposefsRoot, nonComposefsRunRoot, nonComposefsDriver)
+		restorePullTmp()
+		if err != nil {
 			return fmt.Errorf("pulling image: %w", err)
 		}
 	} else {
