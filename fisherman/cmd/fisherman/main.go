@@ -134,6 +134,17 @@ func isSpaceConstrained(path string) bool {
 	return st.Type == tmpfsMagic || st.Type == overlayMagic
 }
 
+// installMountOpts are the mount options for the target root while installing.
+// btrfs compresses what is written: the install briefly holds several unpacked
+// copies of the image there (store, OCI export, deployment), and zstd roughly
+// halves them. Other filesystems mount with their defaults.
+func installMountOpts(filesystem string) string {
+	if filesystem == "btrfs" {
+		return "compress=zstd:1"
+	}
+	return ""
+}
+
 func prepareScratchDir(activeTargetMount string, liveISO bool) (string, error) {
 	scratchDir := "/var/fisherman-tmp"
 	if liveISO {
@@ -651,7 +662,7 @@ func main() {
 				fatal("setting up btrfs subvolumes: %v", err)
 			}
 		} else {
-			if err := disk.MountType(rootDev, targetMount, r.Filesystem, ""); err != nil {
+			if err := disk.MountType(rootDev, targetMount, r.Filesystem, installMountOpts(r.Filesystem)); err != nil {
 				fatal("mounting root: %v", err)
 			}
 		}
@@ -873,7 +884,7 @@ func main() {
 		if err := disk.WaitForPartitionNode(rootPart, disk.DefaultPartitionNodeTimeout); err != nil {
 			fatal("remounting root partition after retagging: %v", err)
 		}
-		if err := disk.MountWithRetry(rootPart, activeTargetMount, "", disk.DefaultMountAttempts, disk.DefaultMountBackoff); err != nil {
+		if err := disk.MountWithRetry(rootPart, activeTargetMount, installMountOpts(r.Filesystem), disk.DefaultMountAttempts, disk.DefaultMountBackoff); err != nil {
 			fatal("remounting root partition after retagging: %v", err)
 		}
 		// Remount EFI so that Plymouth/LUKS arg writes land on the real ESP
