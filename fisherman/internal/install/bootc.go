@@ -585,7 +585,7 @@ func bootcViaContainer(opts Options) error {
 			"--root", containersRoot,
 			"--storage-driver", storageDriver,
 		)
-		if !opts.ComposeFsBackend {
+		if nonComposefsRunRoot != "" {
 			podmanArgs = append(podmanArgs, "--runroot", nonComposefsRunRoot)
 		}
 	}
