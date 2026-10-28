@@ -38,6 +38,8 @@ const (
 //   - /run/initramfs/live, /run/initramfs/isoscan: dracut dmsquash-live
 //     mounts the live medium (or the disk holding the ISO file) here.
 //   - /run/media/iso: the live mount XFCE's frontend excluded.
+//   - /run/archiso/bootmnt: archiso (Arch-based live media) mounts the boot
+//     medium here.
 var systemMounts = map[string]bool{
 	"/":                      true,
 	"/sysroot":               true,
@@ -49,6 +51,7 @@ var systemMounts = map[string]bool{
 	"/run/initramfs/live":    true,
 	"/run/initramfs/isoscan": true,
 	"/run/media/iso":         true,
+	"/run/archiso/bootmnt":   true,
 }
 
 // Disk is one top-level block device.

@@ -24,6 +24,24 @@ func loadDisks(t *testing.T, fixture string) map[string]Disk {
 	return byPath
 }
 
+// archiso mounts its boot medium at /run/archiso/bootmnt; the stick the
+// installer runs from must not be offered as an install target.
+func TestDisksExcludesArchisoBootMedium(t *testing.T) {
+	raw := []byte(`{"blockdevices": [
+	  {"name": "/dev/sdb", "kname": "/dev/sdb", "type": "disk", "size": 32017047552, "model": "Ultra Fit", "vendor": "SanDisk ", "tran": "usb", "rm": true, "hotplug": true, "ro": false, "mountpoints": [null],
+	   "children": [
+	     {"name": "/dev/sdb1", "kname": "/dev/sdb1", "type": "part", "size": 1610612736, "model": null, "vendor": null, "tran": null, "rm": true, "hotplug": true, "ro": false, "mountpoints": ["/run/archiso/bootmnt"]}
+	   ]}
+	]}`)
+	disks, err := ParseLsblk(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(disks) != 1 || disks[0].Eligible || disks[0].ExcludedReason != ExcludedBootDisk {
+		t.Errorf("archiso boot stick: %+v, want ineligible with reason %q", disks, ExcludedBootDisk)
+	}
+}
+
 func TestDisksExclusionRules(t *testing.T) {
 	disks := loadDisks(t, "machine.json")
 	tests := []struct {
