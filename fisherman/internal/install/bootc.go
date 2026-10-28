@@ -464,6 +464,11 @@ func bootcViaContainer(opts Options) error {
 	// overlay driver at all ("'overlay' is not supported over overlayfs").
 	if (!opts.ComposeFsBackend && ociSource) || storageSpaceConstrainedFn() {
 		driver, reason := selectStorageDriverFn(scratch)
+		if driver != "overlay" && opts.ComposeFsBackend && !ociSource {
+			// vfs keeps a full copy of the filesystem per layer: a 450-layer
+			// image fills a 60 GiB disk. Stop now instead of half an hour in.
+			return fmt.Errorf("podman cannot use overlay storage on the target disk (%s); vfs would fill the disk", reason)
+		}
 		if driver == "overlay" || ociSource || opts.ComposeFsBackend {
 			progress.Substep(fmt.Sprintf("Redirecting podman storage to target disk with %s driver (%s)", driver, reason))
 			nonComposefsRoot = filepath.Join(scratch, "containers-root")
