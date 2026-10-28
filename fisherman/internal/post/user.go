@@ -163,6 +163,17 @@ func CreateUser(sysroot string, u UserConfig) error {
 		flag := []string{}
 		if strings.HasPrefix(u.Password, "$") {
 			flag = []string{"-e"}
+		} else if composefs {
+			// A plaintext password goes through the target's PAM stack, but the
+			// composefs deploy root holds only etc/ (pam.d without the modules,
+			// which live in the read-only image), so chpasswd --root fails with
+			// "Module is unknown". Hash it here and write it with -e instead.
+			hash, err := HashPasswordFn(u.Password)
+			if err != nil {
+				return fmt.Errorf("hashing password: %w", err)
+			}
+			input = fmt.Sprintf("%s:%s\n", u.Username, hash)
+			flag = []string{"-e"}
 		}
 		var cpErr error
 		if composefs {
@@ -179,6 +190,30 @@ func CreateUser(sysroot string, u UserConfig) error {
 
 	fmt.Printf("  created user %q in installed system\n", u.Username)
 	return nil
+}
+
+// HashPasswordFn turns a plaintext password into a crypt(3) string. Replaced in
+// tests.
+var HashPasswordFn = hashPasswordSHA512
+
+// hashPasswordSHA512 hashes with `openssl passwd -6` (SHA-512 crypt, the
+// shadow default), reading the password from stdin so it never appears in an
+// argv.
+func hashPasswordSHA512(plain string) (string, error) {
+	if strings.ContainsAny(plain, "\r\n") {
+		return "", fmt.Errorf("password contains a line break")
+	}
+	cmd := runner.HostCommand("openssl", "passwd", "-6", "-stdin")
+	cmd.Stdin = strings.NewReader(plain + "\n")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("openssl passwd: %w", err)
+	}
+	hash := strings.TrimSpace(string(out))
+	if !strings.HasPrefix(hash, "$6$") {
+		return "", fmt.Errorf("openssl passwd: unexpected output")
+	}
+	return hash, nil
 }
 
 // filterExistingGroups drops groups absent from <root>/etc/group. When the

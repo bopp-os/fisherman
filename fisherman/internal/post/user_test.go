@@ -170,6 +170,59 @@ func TestCreateUserComposeFsUsesRootFlag(t *testing.T) {
 	}
 }
 
+// A plaintext password on composefs must be hashed by fisherman and written
+// with chpasswd -e: the deploy root has pam.d but no PAM modules, so a
+// plaintext chpasswd --root fails with "Module is unknown".
+func TestCreateUserComposeFsHashesPlaintextPassword(t *testing.T) {
+	sysroot := t.TempDir()
+	etcDir := filepath.Join(sysroot, "state", "deploy", "abc123", "etc")
+	if err := os.MkdirAll(etcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	origEtcFn := ComposeFsDeployEtcDirFn
+	defer func() { ComposeFsDeployEtcDirFn = origEtcFn }()
+	ComposeFsDeployEtcDirFn = func(string) (string, error) { return etcDir, nil }
+
+	origHash := HashPasswordFn
+	defer func() { HashPasswordFn = origHash }()
+	var hashed string
+	HashPasswordFn = func(plain string) (string, error) {
+		hashed = plain
+		return "$6$salt$hashed", nil
+	}
+
+	var chpasswdArgs []string
+	var chpasswdInput string
+	origRunFn := runner.RunFn
+	defer func() { runner.RunFn = origRunFn }()
+	runner.RunFn = func(stdin io.Reader, name string, args ...string) error {
+		switch name {
+		case "ls":
+			_, err := os.Stat(args[len(args)-1])
+			return err
+		case "chpasswd":
+			chpasswdArgs = args
+			data, _ := io.ReadAll(stdin)
+			chpasswdInput = string(data)
+		}
+		return nil
+	}
+
+	if err := CreateUser(sysroot, UserConfig{Username: "dave", Password: "plain-secret"}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if hashed != "plain-secret" {
+		t.Errorf("HashPasswordFn got %q, want the plaintext", hashed)
+	}
+	wantRoot := filepath.Join(sysroot, "state", "deploy", "abc123")
+	if strings.Join(chpasswdArgs, " ") != "--root "+wantRoot+" -e" {
+		t.Errorf("chpasswd args = %v, want [--root %s -e]", chpasswdArgs, wantRoot)
+	}
+	if chpasswdInput != "dave:$6$salt$hashed\n" {
+		t.Errorf("chpasswd input = %q, want the hash", chpasswdInput)
+	}
+}
+
 // Groups that do not exist on the target must be skipped, not passed to
 // useradd (which exits 6 and aborts the install — e.g. libvirt on images
 // without virt-manager).
