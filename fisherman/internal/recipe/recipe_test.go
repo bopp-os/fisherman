@@ -277,6 +277,20 @@ func TestLoad(t *testing.T) {
 		}
 	})
 
+	t.Run("skipFlatpaks", func(t *testing.T) {
+		path := filepath.Join(dir, "skip.json")
+		if err := os.WriteFile(path, []byte(`{"hostname":"h","skipFlatpaks":true}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := recipe.Load(path)
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		if !loaded.SkipFlatpaks {
+			t.Error("SkipFlatpaks = false, want true")
+		}
+	})
+
 	t.Run("missing file", func(t *testing.T) {
 		_, err := recipe.Load(filepath.Join(dir, "nonexistent.json"))
 		if err == nil {

@@ -276,7 +276,7 @@ If `bootc install` fails due to insufficient space:
 
 **Fix:**
 - Use a larger disk, or
-- Disable Flatpaks in the recipe (step 8 will not run)
+- Disable Flatpaks in the recipe with `"skipFlatpaks": true` (step 8 then copies nothing)
 - Use a smaller base image
 
 ### TPM not detected but recipe requires TPM
