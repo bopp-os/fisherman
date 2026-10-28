@@ -1020,8 +1020,13 @@ func skopeoExportOCI(image, destDir, tmpdir string) error {
 	restoreVarTmp := overrideVarTmp(tmpdir)
 	defer restoreVarTmp()
 
+	// --remove-signatures: an OCI layout cannot store signatures, and skopeo
+	// refuses the copy when containers-storage holds sigstore signatures for
+	// the image (hosts that verify cosign signatures on pull keep them). The
+	// pull already verified them; this local scratch copy does not need them.
 	skopeoArgs := []string{
 		"copy",
+		"--remove-signatures",
 		containersStorageSource(image),
 		"oci:" + destDir,
 	}
