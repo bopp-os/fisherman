@@ -51,6 +51,12 @@ type Recipe struct {
 	//   "flatpak_var_path": "state/os/default/var"
 	FlatpakVarPath string   `json:"flatpakVarPath,omitempty"`
 	Hostname       string   `json:"hostname"`
+	// Locale (LANG, e.g. "en_US.UTF-8"), Keymap (console keymap, e.g. "us") and
+	// Timezone (zoneinfo name, e.g. "Europe/Berlin") are written to the installed
+	// system when set; empty leaves the image's own setting.
+	Locale   string `json:"locale,omitempty"`
+	Keymap   string `json:"keymap,omitempty"`
+	Timezone string `json:"timezone,omitempty"`
 	Flatpaks       []string `json:"flatpaks"` // flatpak app IDs to install; empty = fallback
 	// SkipFlatpaks turns the Flatpak step into a no-op: nothing is copied from
 	// the host and the fallback set is not downloaded. For images that ship

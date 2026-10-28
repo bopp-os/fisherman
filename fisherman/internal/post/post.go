@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -297,27 +298,37 @@ func IsComposeFsNativeExported(sysroot string) bool {
 	return isComposeFsNative(sysroot)
 }
 
-// WriteHostname writes /etc/hostname into the installed system at target.
-// For composefs-native deployments, the hostname goes into the active deploy
-// etc dir (found via ComposeFsDeployEtcDirFn). For ostree-based deployments
-// it goes into the ostree deployment subtree (found via DeploymentDirFn).
-func WriteHostname(target, hostname string) error {
+// deployEtcDir returns the active deployment's etc directory at target, created
+// if missing: the composefs deploy etc, or the ostree deployment's etc.
+func deployEtcDir(target string) (string, error) {
 	var etcDir string
 	if isComposeFsNative(target) {
 		var err error
 		etcDir, err = ComposeFsDeployEtcDirFn(target)
 		if err != nil {
-			return fmt.Errorf("finding composefs deploy etc: %w", err)
+			return "", fmt.Errorf("finding composefs deploy etc: %w", err)
 		}
 	} else {
 		deployDir, err := DeploymentDirFn(target)
 		if err != nil {
-			return fmt.Errorf("finding deployment dir: %w", err)
+			return "", fmt.Errorf("finding deployment dir: %w", err)
 		}
 		etcDir = filepath.Join(deployDir, "etc")
 	}
 	if err := runner.Run("mkdir", "-p", etcDir); err != nil {
-		return fmt.Errorf("mkdir %s: %w", etcDir, err)
+		return "", fmt.Errorf("mkdir %s: %w", etcDir, err)
+	}
+	return etcDir, nil
+}
+
+// WriteHostname writes /etc/hostname into the installed system at target.
+// For composefs-native deployments, the hostname goes into the active deploy
+// etc dir (found via ComposeFsDeployEtcDirFn). For ostree-based deployments
+// it goes into the ostree deployment subtree (found via DeploymentDirFn).
+func WriteHostname(target, hostname string) error {
+	etcDir, err := deployEtcDir(target)
+	if err != nil {
+		return err
 	}
 	hostnameFile := filepath.Join(etcDir, "hostname")
 	data := []byte(hostname + "\n")
@@ -325,6 +336,62 @@ func WriteHostname(target, hostname string) error {
 		return fmt.Errorf("write %s: %w", hostnameFile, err)
 	}
 	fmt.Fprintf(os.Stdout, "  wrote hostname %q to %s\n", hostname, hostnameFile)
+	return nil
+}
+
+var (
+	localeRe   = regexp.MustCompile(`^[A-Za-z]{2,3}(_[A-Za-z0-9]{2,})?(\.[A-Za-z0-9-]+)?(@[A-Za-z0-9]+)?$`)
+	keymapRe   = regexp.MustCompile(`^[A-Za-z0-9_.+-]{1,40}$`)
+	timezoneRe = regexp.MustCompile(`^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+){0,2}$`)
+)
+
+// WriteLocale writes the language, console keymap and timezone the user chose
+// into the installed system's etc: locale.conf (LANG), vconsole.conf (KEYMAP)
+// and the localtime symlink. An empty value is left unset. A value that is not
+// a plain locale, keymap or zoneinfo name is refused, since the timezone becomes
+// a symlink target.
+func WriteLocale(target, locale, keymap, timezone string) error {
+	if locale == "" && keymap == "" && timezone == "" {
+		return nil
+	}
+	if locale != "" && !localeRe.MatchString(locale) {
+		return fmt.Errorf("invalid locale %q", locale)
+	}
+	if keymap != "" && !keymapRe.MatchString(keymap) {
+		return fmt.Errorf("invalid keymap %q", keymap)
+	}
+	if timezone != "" && (!timezoneRe.MatchString(timezone) || strings.Contains(timezone, "..")) {
+		return fmt.Errorf("invalid timezone %q", timezone)
+	}
+	etcDir, err := deployEtcDir(target)
+	if err != nil {
+		return err
+	}
+	write := func(name, content string) error {
+		path := filepath.Join(etcDir, name)
+		if err := runner.RunWithStdin(strings.NewReader(content), "tee", path); err != nil {
+			return fmt.Errorf("write %s: %w", path, err)
+		}
+		fmt.Fprintf(os.Stdout, "  wrote %s\n", path)
+		return nil
+	}
+	if locale != "" {
+		if err := write("locale.conf", "LANG="+locale+"\n"); err != nil {
+			return err
+		}
+	}
+	if keymap != "" {
+		if err := write("vconsole.conf", "KEYMAP="+keymap+"\n"); err != nil {
+			return err
+		}
+	}
+	if timezone != "" {
+		link := filepath.Join(etcDir, "localtime")
+		if err := runner.Run("ln", "-sf", "../usr/share/zoneinfo/"+timezone, link); err != nil {
+			return fmt.Errorf("link %s: %w", link, err)
+		}
+		fmt.Fprintf(os.Stdout, "  linked %s to %s\n", link, timezone)
+	}
 	return nil
 }
 

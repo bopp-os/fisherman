@@ -938,6 +938,11 @@ func main() {
 		fatal("writing hostname: %v", err)
 	}
 
+	if err := post.WriteLocale(activeTargetMount, r.Locale, r.Keymap, r.Timezone); err != nil {
+		// Not fatal: the system boots with the image's defaults.
+		progress.Info(fmt.Sprintf("Warning: could not write locale, keymap or timezone: %v", err))
+	}
+
 	// Write /var fstab entry if a separate /var disk was used.
 	if hasVarDisk {
 		varUUID := disk.UUID(r.VarDisk.Disk)
