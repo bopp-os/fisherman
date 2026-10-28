@@ -37,6 +37,10 @@ type Recipe struct {
 	// Bootloader selects the bootloader: "grub2" (default) or "systemd".
 	// Use "systemd" for images that ship systemd-boot (e.g. Project Bluefin/Dakota).
 	Bootloader string `json:"bootloader"`
+	// KernelArgs are extra kernel arguments for the installed system, passed
+	// to bootc install as one --karg each (e.g. hardware presets,
+	// "console=ttyS0" for a serial console).
+	KernelArgs []string `json:"kernelArgs,omitempty"`
 	// ImageType selects the install backend: "bootc" (default) or "ostree".
 	// "ostree" support is not yet implemented and will be rejected by Validate().
 	ImageType string `json:"imageType"`

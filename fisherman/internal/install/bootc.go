@@ -140,6 +140,9 @@ type Options struct {
 	// Bootloader selects the bootloader passed to bootc via --bootloader.
 	// Empty or "grub2" uses the default (grub2). "systemd" passes --bootloader systemd.
 	Bootloader string
+	// KernelArgs are passed to bootc as one --karg each, added to the image's
+	// own kargs.d arguments in the installed system's boot entries.
+	KernelArgs []string
 	// Target is the path to the mounted root filesystem on the host.
 	Target string
 	// ScratchDir is the host-side directory used for temporary I/O during
@@ -232,6 +235,9 @@ func BuildBootcArgs(opts Options, resolvedTargetImgref, installTarget string) []
 	}
 	if opts.Bootloader != "" && opts.Bootloader != "grub2" {
 		args = append(args, "--bootloader", opts.Bootloader)
+	}
+	for _, k := range opts.KernelArgs {
+		args = append(args, "--karg", k)
 	}
 	args = append(args, "--skip-finalize")
 	args = append(args, installTarget)

@@ -164,6 +164,18 @@ func TestBuildBootcArgs_GenericImage(t *testing.T) {
 	assertContains(t, args, "--generic-image")
 }
 
+// KernelArgs become one --karg pair each, in order, before the target.
+func TestBuildBootcArgs_KernelArgs(t *testing.T) {
+	args := install.BuildBootcArgs(install.Options{KernelArgs: []string{"console=ttyS0", "quiet"}}, "", "/target")
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--karg console=ttyS0 --karg quiet") {
+		t.Errorf("args = %v, want --karg console=ttyS0 --karg quiet", args)
+	}
+	if args[len(args)-1] != "/target" {
+		t.Errorf("last arg = %q, want /target", args[len(args)-1])
+	}
+}
+
 func TestBuildBootcArgs_NoGenericImage(t *testing.T) {
 	args := install.BuildBootcArgs(install.Options{GenericImage: false}, "", "/target")
 	assertAbsent(t, args, "--generic-image")

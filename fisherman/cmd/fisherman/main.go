@@ -776,6 +776,7 @@ func main() {
 		ComposeFsBackend:      composeFsBackend,
 		GenericImage:          r.GenericImage,
 		Bootloader:            r.Bootloader,
+		KernelArgs:            r.KernelArgs,
 		Target:                activeTargetMount,
 		ScratchDir:            scratchDir,
 		NeedsPull:             imageCheck.NeedsPull,
