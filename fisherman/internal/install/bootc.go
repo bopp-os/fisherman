@@ -459,9 +459,12 @@ func bootcViaContainer(opts Options) error {
 	// overlay when supported; an OCI source still needs disk-backed VFS when
 	// overlay is unavailable.
 	var nonComposefsRoot, nonComposefsRunRoot, nonComposefsDriver string
-	if !opts.ComposeFsBackend && (ociSource || storageSpaceConstrainedFn()) {
+	// The composefs backend pulls into the redirected root too: on live media the
+	// default store sits on the RAM-backed overlay, where podman cannot use its
+	// overlay driver at all ("'overlay' is not supported over overlayfs").
+	if (!opts.ComposeFsBackend && ociSource) || storageSpaceConstrainedFn() {
 		driver, reason := selectStorageDriverFn(scratch)
-		if driver == "overlay" || ociSource {
+		if driver == "overlay" || ociSource || opts.ComposeFsBackend {
 			progress.Substep(fmt.Sprintf("Redirecting podman storage to target disk with %s driver (%s)", driver, reason))
 			nonComposefsRoot = filepath.Join(scratch, "containers-root")
 			// Keep graphroot and runroot together.  Skopeo's containers-storage
