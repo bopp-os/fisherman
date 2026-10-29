@@ -233,7 +233,9 @@ func BuildBootcArgs(opts Options, resolvedTargetImgref, installTarget string) []
 		// at /usr/lib/containers/storage).  No network pull needed.
 		args = append(args, "--source-imgref", "containers-storage:"+bareImageRef(resolvedTargetImgref))
 	}
-	if opts.Bootloader != "" && opts.Bootloader != "grub2" {
+	if opts.Bootloader == "grub-external" {
+		args = append(args, "--bootloader", "none") // fisherman installs grub itself afterwards
+	} else if opts.Bootloader != "" && opts.Bootloader != "grub2" {
 		args = append(args, "--bootloader", opts.Bootloader)
 	}
 	for _, k := range opts.KernelArgs {

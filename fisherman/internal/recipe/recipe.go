@@ -34,8 +34,11 @@ type Recipe struct {
 	// ZFSPoolName is the name of the ZFS pool to create (default: "rpool").
 	// Only used when Filesystem is "zfs".
 	ZFSPoolName string `json:"zfsPoolName,omitempty"`
-	// Bootloader selects the bootloader: "grub2" (default) or "systemd".
+	// Bootloader selects the bootloader: "grub2" (default), "systemd", or "grub-external".
 	// Use "systemd" for images that ship systemd-boot (e.g. Project Bluefin/Dakota).
+	// "grub-external" is for ostree images without bootupd: bootc installs with
+	// --bootloader none, then fisherman runs grub-install from the live system and
+	// points ostree at grub2 so upgrades keep grub.cfg current (the image needs grub).
 	Bootloader string `json:"bootloader"`
 	// KernelArgs are extra kernel arguments for the installed system, passed
 	// to bootc install as one --karg each (e.g. hardware presets,

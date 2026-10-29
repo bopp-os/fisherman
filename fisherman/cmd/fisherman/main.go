@@ -785,7 +785,7 @@ func main() {
 		SelinuxDisabled:       r.SelinuxDisabled,
 		UnifiedStorage:        r.UnifiedStorage,
 		ComposeFsBackend:      composeFsBackend,
-		GenericImage:          r.GenericImage,
+		GenericImage:          r.GenericImage || r.Bootloader == "grub-external",
 		Bootloader:            r.Bootloader,
 		KernelArgs:            r.KernelArgs,
 		Target:                activeTargetMount,
@@ -795,6 +795,13 @@ func main() {
 		AdditionalImageStores: imageStores,
 	}); err != nil {
 		fatal("bootc install: %v", err)
+	}
+
+	// ostree images without bootupd: bootc installed no bootloader, so install grub from the live system.
+	if !isManual && r.Bootloader == "grub-external" {
+		if err := install.InstallGrubExternal(activeTargetMount, r.DistroID); err != nil {
+			fatal("installing grub: %v", err)
+		}
 	}
 
 	// Ensure BOOTX64.EFI is on the ESP before anything touches the mount stack.
