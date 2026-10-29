@@ -82,7 +82,7 @@ func readBootEntries(dir string) ([]bootEntry, error) {
 // of the /boot filesystem every time grub starts. ostree adds a boot entry (and flips the loader symlink) for each
 // deployment, so bootc switch, upgrade and rollback show up in the menu with nothing to regenerate; Fedora's grub
 // works the same way. A "Boot entries as installed" submenu follows, one static entry per boot entry present now,
-// for a grub whose blscfg is missing or fails. bootUUID is the filesystem UUID of the partition that holds /boot,
+// for a grub whose blscfg is missing or fails. The last entry opens the firmware setup (UEFI only). bootUUID is the filesystem UUID of the partition that holds /boot,
 // which is where the entries' linux and initrd paths are rooted.
 func renderGrubCfg(entries []bootEntry, bootUUID string) string {
 	var b strings.Builder
@@ -104,6 +104,7 @@ func renderGrubCfg(entries []bootEntry, bootUUID string) string {
 		b.WriteString("}\n")
 	}
 	b.WriteString("}\n")
+	b.WriteString("if [ \"$grub_platform\" = \"efi\" ]; then\n    menuentry 'UEFI Firmware Settings' {\n        fwsetup\n    }\nfi\n")
 	return b.String()
 }
 

@@ -27,7 +27,7 @@ func TestRenderGrubCfgReadsEntriesAndKeepsStaticFallback(t *testing.T) {
 		{title: "new", linux: "/n/vmlinuz", initrd: []string{"/n/initrd"}, options: "root=UUID=a"},
 		{title: "it's old", linux: "/o/vmlinuz", options: "root=UUID=a"},
 	}, "1234-ABCD")
-	for _, want := range []string{"set default=0", "insmod blsuki\nblscfg\n", "submenu 'Boot entries as installed'",
+	for _, want := range []string{"set default=0", "insmod blsuki\nblscfg\n", "submenu 'Boot entries as installed'", "menuentry 'UEFI Firmware Settings'", "fwsetup",
 		"menuentry 'new'", "menuentry 'its old'",
 		"search --no-floppy --fs-uuid --set=root 1234-ABCD", "linux /n/vmlinuz root=UUID=a", "initrd /n/initrd"} {
 		if !strings.Contains(cfg, want) {
@@ -36,6 +36,9 @@ func TestRenderGrubCfgReadsEntriesAndKeepsStaticFallback(t *testing.T) {
 	}
 	if strings.Index(cfg, "blscfg") > strings.Index(cfg, "submenu") {
 		t.Errorf("blscfg must come before the fallback submenu")
+	}
+	if strings.Index(cfg, "fwsetup") < strings.LastIndex(cfg, "menuentry 'its old'") {
+		t.Errorf("the firmware entry must come after the submenu")
 	}
 	if strings.Index(cfg, "menuentry 'new'") > strings.Index(cfg, "menuentry 'its old'") {
 		t.Errorf("entries are not in the order given")
