@@ -78,12 +78,18 @@ func readBootEntries(dir string) ([]bootEntry, error) {
 	return entries, nil
 }
 
-// renderGrubCfg writes a grub.cfg with one menu entry per boot entry, newest
-// first (the default). bootUUID is the filesystem UUID of the partition that
-// holds /boot, which is where the entries' linux and initrd paths are rooted.
+// renderGrubCfg writes the grub.cfg. The menu comes from blscfg, which reads the BLS entries under /loader/entries
+// of the /boot filesystem every time grub starts. ostree adds a boot entry (and flips the loader symlink) for each
+// deployment, so bootc switch, upgrade and rollback show up in the menu with nothing to regenerate; Fedora's grub
+// works the same way. A "Boot entries as installed" submenu follows, one static entry per boot entry present now,
+// for a grub whose blscfg is missing or fails. bootUUID is the filesystem UUID of the partition that holds /boot,
+// which is where the entries' linux and initrd paths are rooted.
 func renderGrubCfg(entries []bootEntry, bootUUID string) string {
 	var b strings.Builder
-	b.WriteString("set default=0\nset timeout=5\ninsmod part_gpt\ninsmod ext2\ninsmod btrfs\n")
+	b.WriteString("set default=0\nset timeout=5\ninsmod part_gpt\ninsmod ext2\ninsmod btrfs\ninsmod xfs\n")
+	fmt.Fprintf(&b, "search --no-floppy --fs-uuid --set=root %s\n", bootUUID)
+	b.WriteString("insmod blsuki\nblscfg\n")
+	b.WriteString("submenu 'Boot entries as installed' {\n")
 	for _, e := range entries {
 		title := strings.ReplaceAll(e.title, "'", "")
 		if title == "" {
@@ -97,48 +103,8 @@ func renderGrubCfg(entries []bootEntry, bootUUID string) string {
 		}
 		b.WriteString("}\n")
 	}
+	b.WriteString("}\n")
 	return b.String()
-}
-
-// setINIValue sets key=value inside [section] of an ini-style file (the ostree
-// repo config), adding the key or the section when missing.
-func setINIValue(content, section, key, value string) string {
-	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
-	header := "[" + section + "]"
-	inSection, sectionEnd, found := false, -1, false
-	for i, line := range lines {
-		t := strings.TrimSpace(line)
-		if strings.HasPrefix(t, "[") {
-			if inSection && sectionEnd < 0 {
-				sectionEnd = i
-			}
-			inSection = t == header
-			continue
-		}
-		if inSection {
-			k, _, ok := strings.Cut(t, "=")
-			if ok && strings.TrimSpace(k) == key {
-				lines[i] = key + "=" + value
-				found = true
-			}
-		}
-	}
-	if found {
-		return strings.Join(lines, "\n") + "\n"
-	}
-	newLine := key + "=" + value
-	switch {
-	case sectionEnd >= 0:
-		lines = append(lines[:sectionEnd], append([]string{newLine}, lines[sectionEnd:]...)...)
-	case inSection:
-		lines = append(lines, newLine)
-	default:
-		if len(lines) == 1 && lines[0] == "" {
-			lines = nil
-		}
-		lines = append(lines, header, newLine)
-	}
-	return strings.Join(lines, "\n") + "\n"
 }
 
 // grubEFITarget is grub-install's --target for this architecture.
@@ -154,9 +120,8 @@ func grubEFITarget() string {
 
 // InstallGrubExternal installs grub for an ostree system that bootc installed with
 // --bootloader none (bootupd is missing from the image): grub-install onto the
-// ESP, a first grub.cfg built from ostree's boot entries, and ostree's
-// sysroot.bootloader set to grub2 so that every later upgrade regenerates
-// grub.cfg through the image's grub-mkconfig and 15_ostree.
+// ESP and a grub.cfg that reads ostree's boot entries when grub starts (see renderGrubCfg), so later deployments
+// need no regeneration. sysroot.bootloader stays none: ostree only writes the entries.
 //
 // target is the mounted root with /boot and /boot/efi mounted under it.
 func InstallGrubExternal(target, bootloaderID string) error {
@@ -199,17 +164,6 @@ func InstallGrubExternal(target, bootloaderID string) error {
 	cfgPath := filepath.Join(grubDir, "grub.cfg")
 	if err := runner.RunWithStdin(strings.NewReader(cfg), "tee", cfgPath); err != nil {
 		return fmt.Errorf("write %s: %w", cfgPath, err)
-	}
-
-	// bootc wrote sysroot.bootloader=none; let ostree manage grub.cfg from now on.
-	repoConfig := filepath.Join(target, "ostree", "repo", "config")
-	raw, err := runner.Output("cat", repoConfig)
-	if err != nil {
-		return fmt.Errorf("reading %s: %w", repoConfig, err)
-	}
-	updated := setINIValue(string(raw), "sysroot", "bootloader", "grub2")
-	if err := runner.RunWithStdin(strings.NewReader(updated), "tee", repoConfig); err != nil {
-		return fmt.Errorf("write %s: %w", repoConfig, err)
 	}
 	return nil
 }

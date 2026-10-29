@@ -22,36 +22,22 @@ func TestParseBootEntry(t *testing.T) {
 	}
 }
 
-func TestRenderGrubCfgListsEveryEntry(t *testing.T) {
+func TestRenderGrubCfgReadsEntriesAndKeepsStaticFallback(t *testing.T) {
 	cfg := renderGrubCfg([]bootEntry{
 		{title: "new", linux: "/n/vmlinuz", initrd: []string{"/n/initrd"}, options: "root=UUID=a"},
 		{title: "it's old", linux: "/o/vmlinuz", options: "root=UUID=a"},
 	}, "1234-ABCD")
-	for _, want := range []string{"set default=0", "menuentry 'new'", "menuentry 'its old'",
+	for _, want := range []string{"set default=0", "insmod blsuki\nblscfg\n", "submenu 'Boot entries as installed'",
+		"menuentry 'new'", "menuentry 'its old'",
 		"search --no-floppy --fs-uuid --set=root 1234-ABCD", "linux /n/vmlinuz root=UUID=a", "initrd /n/initrd"} {
 		if !strings.Contains(cfg, want) {
 			t.Errorf("grub.cfg is missing %q:\n%s", want, cfg)
 		}
 	}
+	if strings.Index(cfg, "blscfg") > strings.Index(cfg, "submenu") {
+		t.Errorf("blscfg must come before the fallback submenu")
+	}
 	if strings.Index(cfg, "menuentry 'new'") > strings.Index(cfg, "menuentry 'its old'") {
 		t.Errorf("entries are not in the order given")
-	}
-}
-
-func TestSetINIValue(t *testing.T) {
-	cases := []struct{ name, in, want string }{
-		{"replaces the key", "[core]\nrepo_version=1\n[sysroot]\nbootloader=none\nreadonly=true\n",
-			"[core]\nrepo_version=1\n[sysroot]\nbootloader=grub2\nreadonly=true\n"},
-		{"adds the key to the section", "[sysroot]\nreadonly=true\n[core]\nx=1\n",
-			"[sysroot]\nreadonly=true\nbootloader=grub2\n[core]\nx=1\n"},
-		{"adds the key at the end of the last section", "[core]\nx=1\n[sysroot]\nreadonly=true\n",
-			"[core]\nx=1\n[sysroot]\nreadonly=true\nbootloader=grub2\n"},
-		{"adds the section", "[core]\nx=1\n", "[core]\nx=1\n[sysroot]\nbootloader=grub2\n"},
-		{"empty file", "", "[sysroot]\nbootloader=grub2\n"},
-	}
-	for _, c := range cases {
-		if got := setINIValue(c.in, "sysroot", "bootloader", "grub2"); got != c.want {
-			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
-		}
 	}
 }
