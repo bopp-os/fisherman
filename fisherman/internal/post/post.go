@@ -395,6 +395,37 @@ func WriteLocale(target, locale, keymap, timezone string) error {
 	return nil
 }
 
+var (
+	firstRunDistroRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+	firstRunModes    = map[string]bool{"welcome": true, "oobe": true}
+)
+
+// WriteFirstRun records how the first boot should start: /var/lib/<distroID>/first-run holding
+// "mode=welcome" (an account was created, so the welcome tour runs) or "mode=oobe" (no account yet, so the
+// first-boot setup creates one). It goes in the stateroot var, which is what the booted system sees as /var.
+func WriteFirstRun(target, distroID, mode string) error {
+	if !firstRunModes[mode] {
+		return fmt.Errorf("invalid first-run mode %q", mode)
+	}
+	if !firstRunDistroRe.MatchString(distroID) {
+		return fmt.Errorf("invalid distro id %q for the first-run marker", distroID)
+	}
+	varDir := filepath.Join(target, "ostree", "deploy", "default", "var")
+	if isComposeFsNative(target) {
+		varDir = ComposeFsVarDir(target)
+	}
+	dir := filepath.Join(varDir, "lib", distroID)
+	if err := runner.Run("mkdir", "-p", dir); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	path := filepath.Join(dir, "first-run")
+	if err := runner.RunWithStdin(strings.NewReader("mode="+mode+"\n"), "tee", path); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	fmt.Fprintf(os.Stdout, "  wrote first-run marker %s (mode=%s)\n", path, mode)
+	return nil
+}
+
 // fallbackFlatpaks is the core set installed when the recipe doesn't specify
 // a per-image list. Ensures a usable system with browser and terminal.
 var fallbackFlatpaks = []string{

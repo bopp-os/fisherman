@@ -57,6 +57,9 @@ type Recipe struct {
 	// Locale (LANG, e.g. "en_US.UTF-8"), Keymap (console keymap, e.g. "us") and
 	// Timezone (zoneinfo name, e.g. "Europe/Berlin") are written to the installed
 	// system when set; empty leaves the image's own setting.
+	// FirstRun ("welcome" or "oobe") makes fisherman write /var/lib/<distroID>/first-run so the first boot
+	// knows whether an account exists. Empty writes nothing.
+	FirstRun string `json:"firstRun,omitempty"`
 	Locale   string `json:"locale,omitempty"`
 	Keymap   string `json:"keymap,omitempty"`
 	Timezone string `json:"timezone,omitempty"`

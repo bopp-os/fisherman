@@ -961,6 +961,12 @@ func main() {
 		progress.Info(fmt.Sprintf("Warning: could not write locale, keymap or timezone: %v", err))
 	}
 
+	if r.FirstRun != "" {
+		if err := post.WriteFirstRun(activeTargetMount, r.DistroID, r.FirstRun); err != nil {
+			progress.Info(fmt.Sprintf("Warning: could not write the first-run marker: %v", err))
+		}
+	}
+
 	// Write /var fstab entry if a separate /var disk was used.
 	if hasVarDisk {
 		varUUID := disk.UUID(r.VarDisk.Disk)
