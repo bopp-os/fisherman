@@ -797,13 +797,6 @@ func main() {
 		fatal("bootc install: %v", err)
 	}
 
-	// ostree images without bootupd: bootc installed no bootloader, so install grub from the live system.
-	if !isManual && r.Bootloader == "grub-external" {
-		if err := install.InstallGrubExternal(activeTargetMount, r.DistroID); err != nil {
-			fatal("installing grub: %v", err)
-		}
-	}
-
 	// Ensure BOOTX64.EFI is on the ESP before anything touches the mount stack.
 	// Newer bootctl (e.g. arch-bootc systemd ≥ v255) enables --graceful when
 	// running in a container and silently skips writing to the ESP. Copying
@@ -1013,6 +1006,14 @@ func main() {
 			progress.Info(fmt.Sprintf("Warning: could not inject LUKS boot args: %v", err))
 		} else if n > 0 {
 			progress.Info(fmt.Sprintf("Injected rd.luks.name into %d boot entr%s", n, map[bool]string{true: "y", false: "ies"}[n == 1]))
+		}
+	}
+
+	// ostree images without bootupd: bootc installed no bootloader, so install grub from the live system. This runs
+	// after the Plymouth and LUKS args are in the boot entries, because grub.cfg is rendered from them.
+	if !isManual && r.Bootloader == "grub-external" {
+		if err := install.InstallGrubExternal(activeTargetMount, r.DistroID); err != nil {
+			fatal("installing grub: %v", err)
 		}
 	}
 
