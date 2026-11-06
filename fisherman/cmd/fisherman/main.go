@@ -908,6 +908,13 @@ func main() {
 		if r.Encryption.Type == "tpm2-luks" {
 			unlockPassphrase = luksRecoveryKey
 		}
+		// A token bound to no PCR now, so that the first boot unlocks without typing a passphrase (a handheld
+		// has no keyboard at the unlock prompt). Between install and first boot the disk unlocks on this
+		// machine without checking the boot chain; the first-boot service below replaces the token.
+		if err := luks.EnrollTPM2(activeRootPart, unlockPassphrase, ""); err != nil {
+			progress.Info(fmt.Sprintf("Warning: could not enroll TPM2 now; the first boot will ask for the passphrase: %v", err))
+		}
+
 		// Enroll TPM2 on the FIRST BOOT of the installed system, not here:
 		// --tpm2-pcrs=7 seals against PCR 7 as measured in the live
 		// installer, but the installed system boots a different chain and

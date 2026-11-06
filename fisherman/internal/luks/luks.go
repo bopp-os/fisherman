@@ -73,13 +73,15 @@ func UUID(partition string) string {
 //
 // EnrollTPM2 adds a TPM2 auto-unlock token to an existing LUKS2 container,
 // authenticating with the supplied passphrase. The passphrase remains as a
-// fallback unlock method. PCR 7 (Secure Boot state) is used by default.
+// fallback unlock method. pcrs is the --tpm2-pcrs list: "7" binds the token to
+// the Secure Boot state, "" binds it to this TPM only (see main.go: the
+// install-time token, replaced on first boot).
 //
 // The passphrase is written to a temp file rather than passed via stdin because
 // systemd-cryptenroll resolves "--unlock-key-file=-" against the process home
 // directory (/var/roothome when running under pkexec), which fails when that
 // path does not exist. A temp file avoids this root home lookup entirely.
-func EnrollTPM2(partition, passphrase string) error {
+func EnrollTPM2(partition, passphrase, pcrs string) error {
 	f, err := os.CreateTemp("", "fisherman-luks-key-*")
 	if err != nil {
 		return fmt.Errorf("creating temp key file: %w", err)
@@ -99,7 +101,7 @@ func EnrollTPM2(partition, passphrase string) error {
 	return runner.Run(
 		"systemd-cryptenroll",
 		"--tpm2-device=auto",
-		"--tpm2-pcrs=7",
+		"--tpm2-pcrs="+pcrs,
 		fmt.Sprintf("--unlock-key-file=%s", f.Name()),
 		partition,
 	)
@@ -114,7 +116,8 @@ func EnrollTPM2(partition, passphrase string) error {
 // installer. The installed system boots a different chain and measures a
 // different PCR 7, so an install-time enrollment can never unseal on first
 // boot (observed: the LUKS E2E dropped to a passphrase prompt). Enrolling in
-// the booted target captures the correct PCR 7.
+// the booted target captures the correct PCR 7. --wipe-slot=tpm2 replaces the install-time token
+// (bound to no PCR, so that first boot unlocks without typing) with this one.
 //
 // targetMount is the installed root; luksUUID identifies the LUKS partition
 // (by-uuid is stable across the install→installed device renumbering); key
@@ -152,7 +155,7 @@ DefaultDependencies=no
 [Service]
 Type=oneshot
 RemainAfterExit=no
-ExecStart=/usr/bin/systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7 --unlock-key-file=/etc/fisherman/tpm2-enroll.key /dev/disk/by-uuid/` + luksUUID + `
+ExecStart=/usr/bin/systemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 --unlock-key-file=/etc/fisherman/tpm2-enroll.key /dev/disk/by-uuid/` + luksUUID + `
 ExecStartPost=-/usr/bin/shred -u /etc/fisherman/tpm2-enroll.key
 ExecStartPost=-/usr/bin/systemctl disable fisherman-tpm2-enroll.service
 

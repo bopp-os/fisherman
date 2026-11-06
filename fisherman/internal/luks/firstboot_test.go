@@ -35,6 +35,7 @@ func TestStageFirstBootEnrollment(t *testing.T) {
 	for _, want := range []string{
 		"/dev/disk/by-uuid/" + uuid,
 		"--tpm2-pcrs=7",
+		"--wipe-slot=tpm2",
 		"shred -u /etc/fisherman/tpm2-enroll.key",
 		"systemctl disable fisherman-tpm2-enroll.service",
 		"ConditionPathExists=/etc/fisherman/tpm2-enroll.key",
