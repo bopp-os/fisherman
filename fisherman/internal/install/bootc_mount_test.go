@@ -25,6 +25,9 @@ import (
 // --tmpfs /var/tmp for bootc's own ephemeral scratch space.
 func TestComposeFsMountStrategy_Issue38(t *testing.T) {
 	controlledMountCommands(t)
+	// The mount layout on ordinary storage: a host whose podman store looks low on space
+	// would take the redirect-to-target route instead (see the vfs refusal test below).
+	defer install.SetStorageSpaceConstrainedForTest(false)()
 	tmpDir := t.TempDir()
 
 	install.SkopeoExportOCIFn = func(image, destDir, tmpdir string) error {
@@ -91,10 +94,57 @@ func TestComposeFsMountStrategy_Issue38(t *testing.T) {
 	}
 }
 
+// TestComposeFsRefusesVfsOnConstrainedStorage: on live media (default store
+// low on space) a composefs install redirects podman to the target disk, and
+// stops before running anything when only vfs is available there: vfs keeps a
+// full copy per layer and would fill the disk half an hour in.
+func TestComposeFsRefusesVfsOnConstrainedStorage(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	var calls []string
+	old := install.CommandFn
+	install.CommandFn = func(name string, args ...string) *exec.Cmd {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		return exec.Command("/bin/false")
+	}
+	t.Cleanup(func() { install.CommandFn = old })
+	defer install.SetStorageSpaceConstrainedForTest(true)()
+	defer install.SetSelectStorageDriverForTest("vfs", "test: overlay unavailable")()
+	install.SkopeoExportOCIFn = func(image, destDir, tmpdir string) error {
+		return os.MkdirAll(destDir, 0755)
+	}
+	t.Cleanup(func() { install.SkopeoExportOCIFn = install.DefaultSkopeoExportOCI })
+
+	tmpDir := t.TempDir()
+	scratchDir := filepath.Join(tmpDir, "scratch")
+	target := filepath.Join(tmpDir, "target")
+	os.MkdirAll(scratchDir, 0755) //nolint:errcheck
+	os.MkdirAll(target, 0755)     //nolint:errcheck
+
+	err := install.BootcInstall(install.Options{
+		ComposeFsBackend: true,
+		SourceImgref:     "containers-storage:test:latest",
+		TargetImgref:     "test:latest",
+		Target:           target,
+		ScratchDir:       scratchDir,
+		NeedsPull:        false,
+	})
+	if err == nil || !strings.Contains(err.Error(), "vfs would fill the disk") {
+		t.Fatalf("want the vfs refusal, got %v", err)
+	}
+	for _, c := range calls {
+		if strings.Contains(c, " run ") {
+			t.Errorf("install container started despite the refusal: %s", c)
+		}
+	}
+}
+
 // TestComposeFsVsStandardMountSeparation verifies composefs and standard installs
 // use different mount strategies and neither panics.
 func TestComposeFsVsStandardMountSeparation(t *testing.T) {
 	controlledMountCommands(t)
+	// The mount layout on ordinary storage: a host whose podman store looks low on space
+	// would take the redirect-to-target route instead (see the vfs refusal test below).
+	defer install.SetStorageSpaceConstrainedForTest(false)()
 	tmpDir := t.TempDir()
 
 	install.SkopeoExportOCIFn = func(image, destDir, tmpdir string) error {
