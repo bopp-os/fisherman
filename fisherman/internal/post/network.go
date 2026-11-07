@@ -114,7 +114,11 @@ func CopyWiFiConnections(target string) error {
 		case p.permissions != "":
 			fmt.Fprintf(os.Stdout, "  skipped NetworkManager profile %q: limited to a live-session user\n", label)
 		default:
-			keep = append(keep, carried{name, label, data})
+			portable, notes := portableNMProfile(data)
+			for _, n := range notes {
+				fmt.Fprintf(os.Stdout, "  NetworkManager profile %q: %s\n", label, n)
+			}
+			keep = append(keep, carried{name, label, portable})
 		}
 	}
 	if len(keep) == 0 {
@@ -175,4 +179,66 @@ func writeRootSecret(path string, data []byte) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// portableNMProfile returns a live-session keyfile as the installed system should get it, with a note for each
+// change (never a secret, MAC address or password in a note):
+//   - interface-name and the wifi/ethernet mac-address binding are dropped: the installed system may name or
+//     randomize the device differently (iwd renames Wi-Fi devices to wlan0), and a profile bound to another name
+//     never activates;
+//   - autoconnect=false is dropped, so the profile connects on boot;
+//   - a WPA/SAE profile without a saved password, or whose password lives in a secret agent (psk-flags other than
+//     0), gets a note: it cannot connect on its own.
+func portableNMProfile(data []byte) ([]byte, []string) {
+	var out bytes.Buffer
+	var notes []string
+	section, keyMgmt, psk, pskFlags := "", "", "", ""
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	for sc.Scan() {
+		raw := sc.Text()
+		line := strings.TrimSpace(raw)
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = strings.TrimSpace(line[1 : len(line)-1])
+		} else if key, value, ok := strings.Cut(line, "="); ok && !strings.HasPrefix(line, "#") {
+			key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+			drop := ""
+			switch section {
+			case "connection":
+				if key == "interface-name" && value != "" {
+					drop = fmt.Sprintf("dropped interface-name=%s (the installed system may name the device differently)", value)
+				}
+				if key == "autoconnect" && value == "false" {
+					drop = "dropped autoconnect=false, so it connects on boot"
+				}
+			case "wifi", "802-11-wireless", "ethernet", "802-3-ethernet":
+				if key == "mac-address" && value != "" {
+					drop = "dropped its binding to the live session's device MAC address"
+				}
+			case "wifi-security", "802-11-wireless-security":
+				switch key {
+				case "key-mgmt":
+					keyMgmt = value
+				case "psk":
+					psk = value
+				case "psk-flags":
+					pskFlags = value
+				}
+			}
+			if drop != "" {
+				notes = append(notes, drop)
+				continue
+			}
+		}
+		out.WriteString(raw)
+		out.WriteByte('\n')
+	}
+	if keyMgmt == "wpa-psk" || keyMgmt == "sae" {
+		if psk == "" || (pskFlags != "" && pskFlags != "0") {
+			notes = append(notes, fmt.Sprintf("WARNING: no saved Wi-Fi password in the profile (psk-flags=%q); "+
+				"it cannot connect on its own", pskFlags))
+		} else {
+			notes = append(notes, "Wi-Fi password saved in the profile")
+		}
+	}
+	return out.Bytes(), notes
 }

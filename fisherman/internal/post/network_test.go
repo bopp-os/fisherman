@@ -167,3 +167,37 @@ func TestParseNMProfileReadsOnlyTheConnectionSection(t *testing.T) {
 		t.Fatalf("got %+v", p)
 	}
 }
+
+func TestPortableNMProfileDropsDeviceBindings(t *testing.T) {
+	in := "[connection]\nid=RippsWiFi\ntype=wifi\ninterface-name=wlp1s0\nautoconnect=false\n\n" +
+		"[wifi]\nmac-address=AA:BB:CC:DD:EE:FF\nmode=infrastructure\nssid=RippsWiFi\n\n" +
+		"[wifi-security]\nkey-mgmt=wpa-psk\npsk=hunter2-secret\n"
+	out, notes := portableNMProfile([]byte(in))
+	got := string(out)
+	for _, gone := range []string{"interface-name", "autoconnect=false", "AA:BB:CC"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("kept %q:\n%s", gone, got)
+		}
+	}
+	for _, kept := range []string{"ssid=RippsWiFi", "psk=hunter2-secret", "key-mgmt=wpa-psk", "[wifi-security]"} {
+		if !strings.Contains(got, kept) {
+			t.Errorf("lost %q:\n%s", kept, got)
+		}
+	}
+	joined := strings.Join(notes, "|")
+	if strings.Contains(joined, "hunter2") || strings.Contains(joined, "AA:BB") {
+		t.Errorf("notes leak a secret or MAC: %q", joined)
+	}
+	if !strings.Contains(joined, "password saved") {
+		t.Errorf("notes %q", joined)
+	}
+}
+
+func TestPortableNMProfileWarnsWithoutASavedPassword(t *testing.T) {
+	for _, sec := range []string{"key-mgmt=wpa-psk\npsk-flags=1\n", "key-mgmt=sae\n"} {
+		_, notes := portableNMProfile([]byte("[connection]\nid=x\ntype=wifi\n[wifi-security]\n" + sec))
+		if !strings.Contains(strings.Join(notes, "|"), "no saved Wi-Fi password") {
+			t.Errorf("%q: notes %q", sec, notes)
+		}
+	}
+}
