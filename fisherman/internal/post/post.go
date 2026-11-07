@@ -282,13 +282,16 @@ var DeploymentDirFn = DefaultDeploymentDir
 // /ostree/deploy/*/deploy/* finds nothing because the deployment is under
 // /state/ — a fatal `finding deployment dir` crash on composefs images.
 func isComposeFsNative(sysroot string) bool {
-	// Use ls via runner (not os.Stat), which runs in the host mount namespace
-	// rather than any sandbox. composefs-native ⟺ state/deploy exists.
-	if err := runner.Run("ls", filepath.Join(sysroot, "state", "deploy")); err == nil {
+	// Use test -d via runner (not os.Stat), which runs in the host mount
+	// namespace rather than any sandbox. composefs-native ⟺ state/deploy
+	// exists. test prints nothing when the directory is missing, the usual
+	// answer on ostree installs; ls filled every ostree install log with
+	// "cannot access .../state/deploy" lines that read like errors.
+	if err := runner.Run("test", "-d", filepath.Join(sysroot, "state", "deploy")); err == nil {
 		return true
 	}
 	// Legacy signal retained: a deployment with no /ostree at all is composefs.
-	return runner.Run("ls", filepath.Join(sysroot, "ostree")) != nil
+	return runner.Run("test", "-d", filepath.Join(sysroot, "ostree")) != nil
 }
 
 // IsComposeFsNativeExported is a public wrapper for isComposeFsNative,

@@ -1096,6 +1096,12 @@ func main() {
 	progress.Substep("Pre-warming system caches for first boot")
 	post.WarmCaches(activeTargetMount)
 
+	// Keep a copy of this log in the installed system (/var/log/fisherman/install.log): the live session's copy is
+	// gone after the reboot. Last thing before the target is finalized read-only. Non-fatal.
+	if err := post.SaveInstallLog(activeTargetMount); err != nil {
+		progress.Info(fmt.Sprintf("Warning: could not save the install log: %v", err))
+	}
+
 	// ── Step 9: Finalize ─────────────────────────────────────────────────────
 	// bootc's --skip-finalize kept the target writable for post-install writes.
 	// Now replicate what bootc's finalize_filesystem() does internally:

@@ -33,7 +33,7 @@ func TestCreateUserRelocatesHomeToStaterootVar(t *testing.T) {
 	runner.RunFn = func(_ io.Reader, name string, args ...string) error {
 		calls = append(calls, append([]string{name}, args...))
 		switch name {
-		case "ls":
+		case "test":
 			if _, err := os.Stat(args[len(args)-1]); err != nil {
 				return err
 			}
@@ -97,7 +97,7 @@ func TestCreateUserUsesChrootNotRootFlag(t *testing.T) {
 	defer func() { runner.RunFn = origRunFn }()
 	runner.RunFn = func(_ io.Reader, name string, args ...string) error {
 		calls = append(calls, append([]string{name}, args...))
-		if name == "ls" {
+		if name == "test" {
 			if _, err := os.Stat(args[len(args)-1]); err != nil {
 				return err
 			}
@@ -145,7 +145,7 @@ func TestCreateUserComposeFsUsesRootFlag(t *testing.T) {
 	defer func() { runner.RunFn = origRunFn }()
 	runner.RunFn = func(_ io.Reader, name string, args ...string) error {
 		calls = append(calls, append([]string{name}, args...))
-		if name == "ls" {
+		if name == "test" {
 			_, err := os.Stat(args[len(args)-1])
 			return err
 		}
@@ -197,7 +197,7 @@ func TestCreateUserComposeFsHashesPlaintextPassword(t *testing.T) {
 	defer func() { runner.RunFn = origRunFn }()
 	runner.RunFn = func(stdin io.Reader, name string, args ...string) error {
 		switch name {
-		case "ls":
+		case "test":
 			_, err := os.Stat(args[len(args)-1])
 			return err
 		case "chpasswd":
@@ -245,7 +245,7 @@ func TestCreateUserSkipsMissingGroups(t *testing.T) {
 	defer func() { runner.RunFn = origRunFn }()
 	runner.RunFn = func(_ io.Reader, name string, args ...string) error {
 		calls = append(calls, append([]string{name}, args...))
-		if name == "ls" {
+		if name == "test" {
 			if _, err := os.Stat(args[len(args)-1]); err != nil {
 				return err
 			}
@@ -293,7 +293,7 @@ func TestCreateUserKeepsGroupsWhenGroupFileMissing(t *testing.T) {
 	defer func() { runner.RunFn = origRunFn }()
 	runner.RunFn = func(_ io.Reader, name string, args ...string) error {
 		calls = append(calls, append([]string{name}, args...))
-		if name == "ls" {
+		if name == "test" {
 			if _, err := os.Stat(args[len(args)-1]); err != nil {
 				return err
 			}
