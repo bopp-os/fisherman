@@ -29,8 +29,9 @@ import (
 // time, while the live system is online: it extracts the bootstrap and stores the manifest and every package in
 // ~/.local/share/Steam/package/ under the names Steam itself uses (the ".zip.vz.<sha>_<size>" form when the manifest
 // has one, else the plain ".zip.<sha>"). On its first start Steam finds the packages in place with the right sizes and
-// only extracts them; when Valve has released a newer client in between, it downloads just the packages that changed.
-// No ".installed" marker is written: extracting the packages stays Steam's job.
+// only checks them; when Valve has released a newer client in between, it downloads just the packages that changed.
+// It also unpacks the client (steam_unpack.go), stores the steamdeck_stable manifest that Steam -steamdeck reads, and
+// makes the ~/.steam/root and ~/.steam/steam links.
 
 // SteamCDN is Valve's client update host. Tests point it at a local server.
 var SteamCDN = "https://client-update.steamstatic.com"
@@ -250,33 +251,33 @@ func kvTokens(s string) ([]kvToken, error) {
 	return toks, nil
 }
 
-// lookupPasswd returns the UID and GID of username from a passwd file.
-func lookupPasswd(passwdPath, username string) (int, int, error) {
+// lookupPasswd returns the UID, GID and home of username from a passwd file.
+func lookupPasswd(passwdPath, username string) (int, int, string, error) {
 	f, err := os.Open(passwdPath)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, "", err
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		fields := strings.Split(sc.Text(), ":")
-		if len(fields) < 4 || fields[0] != username {
+		if len(fields) < 6 || fields[0] != username {
 			continue
 		}
 		uid, err := strconv.Atoi(fields[2])
 		if err != nil {
-			return 0, 0, fmt.Errorf("uid of %s: %w", username, err)
+			return 0, 0, "", fmt.Errorf("uid of %s: %w", username, err)
 		}
 		gid, err := strconv.Atoi(fields[3])
 		if err != nil {
-			return 0, 0, fmt.Errorf("gid of %s: %w", username, err)
+			return 0, 0, "", fmt.Errorf("gid of %s: %w", username, err)
 		}
-		return uid, gid, nil
+		return uid, gid, fields[5], nil
 	}
 	if err := sc.Err(); err != nil {
-		return 0, 0, err
+		return 0, 0, "", err
 	}
-	return 0, 0, fmt.Errorf("%s is not in %s", username, passwdPath)
+	return 0, 0, "", fmt.Errorf("%s is not in %s", username, passwdPath)
 }
 
 // PreloadSteam fills ~/.local/share/Steam of the account fisherman just created with the Steam bootstrap and the
@@ -306,7 +307,7 @@ func PreloadSteam(target, username string) error {
 		fmt.Fprintf(os.Stdout, "  Steam preload skipped: the image has no %s\n", "/"+steamBootstrapRel)
 		return nil
 	}
-	uid, gid, err := lookupPasswd(filepath.Join(deployDir, "etc", "passwd"), username)
+	uid, gid, passwdHome, err := lookupPasswd(filepath.Join(deployDir, "etc", "passwd"), username)
 	if err != nil {
 		return fmt.Errorf("looking up %s: %w", username, err)
 	}
@@ -332,6 +333,22 @@ func PreloadSteam(target, username string) error {
 	if err != nil {
 		return fmt.Errorf("reading the Steam client manifest: %w", err)
 	}
+	// Steam started with -steamdeck (the handheld images) reads the steamdeck_stable manifest instead. Store it too;
+	// today it is the same file, and its packages share names with the stable ones.
+	var deckData []byte
+	var deckManifest *SteamManifest
+	if d, err := steamGet(ctx, steamDeckManifestName, 1<<20); err != nil {
+		fmt.Fprintf(os.Stdout, "  Steam %s manifest not stored: %v\n", "steamdeck_stable", err)
+	} else if dm, err := ParseSteamManifest(d); err != nil {
+		fmt.Fprintf(os.Stdout, "  Steam %s manifest not stored: %v\n", "steamdeck_stable", err)
+	} else {
+		deckData, deckManifest = d, dm
+	}
+	unpack := manifest
+	if deckManifest != nil && steamStartsOnDeckBranch(deployDir) {
+		unpack = deckManifest
+	}
+	downloads := steamPackageUnion(manifest, deckManifest)
 
 	// ~/.local and ~/.local/share may not exist yet; each directory created here goes to the user.
 	for _, dir := range []string{filepath.Join(home, ".local"), filepath.Join(home, ".local", "share")} {
@@ -365,18 +382,23 @@ func PreloadSteam(target, username string) error {
 	if err := os.WriteFile(filepath.Join(pkgDir, steamManifestName+".manifest"), manifestData, 0o600); err != nil {
 		return fmt.Errorf("writing the Steam client manifest: %w", err)
 	}
+	if deckData != nil {
+		if err := os.WriteFile(filepath.Join(pkgDir, steamDeckManifestName+".manifest"), deckData, 0o600); err != nil {
+			return fmt.Errorf("writing the Steam client manifest: %w", err)
+		}
+	}
 
 	var total int64
-	for _, p := range manifest.Packages {
+	for _, p := range downloads {
 		total += p.Size
 	}
 	fmt.Fprintf(os.Stdout, "  preloading Steam client %s for %s: %d packages, %s\n",
-		manifest.Version, username, len(manifest.Packages), humanBytes(total))
+		manifest.Version, username, len(downloads), humanBytes(total))
 
 	var got int64
 	var failed []string
 	var stopErr error
-	for i, p := range manifest.Packages {
+	for i, p := range downloads {
 		if stopErr != nil {
 			failed = append(failed, p.Name)
 			continue
@@ -392,16 +414,33 @@ func PreloadSteam(target, username string) error {
 		}
 		stored++
 		got += p.Size
-		if (i+1)%5 == 0 || i+1 == len(manifest.Packages) {
+		if (i+1)%5 == 0 || i+1 == len(downloads) {
 			fmt.Fprintf(os.Stdout, "  Steam client: %d/%d packages, %s of %s\n",
-				i+1, len(manifest.Packages), humanBytes(got), humanBytes(total))
+				i+1, len(downloads), humanBytes(got), humanBytes(total))
 		}
 	}
 	if stored == 0 {
 		return fmt.Errorf("no Steam package could be downloaded: %w", stopErr)
 	}
 
-	// Everything under the Steam folder goes to the user (tar ran as root).
+	// With every package in place, unpack the client so the first start finds steamui.so. A failed unpack is only a
+	// warning: Steam installs the stored packages itself on its first start.
+	var unpackErr error
+	if len(failed) == 0 {
+		n, err := unpackSteamClient(steamDir, pkgDir, unpack)
+		if err != nil {
+			unpackErr = fmt.Errorf("unpacking the Steam client (Steam unpacks it on its first start instead): %w", err)
+			fmt.Fprintf(os.Stdout, "  Steam client not unpacked: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stdout, "  unpacked the Steam client %s: %d files, steamui.so in place\n",
+				unpack.Version, n)
+		}
+	}
+	if err := steamLinks(home, passwdHome, uid, gid); err != nil {
+		fmt.Fprintf(os.Stdout, "  ~/.steam links not made (steam.sh makes them on its first start): %v\n", err)
+	}
+
+	// Everything under the Steam folder goes to the user (tar and the unpack ran as root).
 	err = filepath.WalkDir(steamDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -415,13 +454,34 @@ func PreloadSteam(target, username string) error {
 
 	if len(failed) > 0 {
 		return fmt.Errorf("Steam preloaded partly (%d of %d packages, the rest downloads on first start): %w",
-			stored, len(manifest.Packages), stopErr)
+			stored, len(downloads), stopErr)
+	}
+	if unpackErr != nil {
+		return unpackErr
 	}
 	fmt.Fprintf(os.Stdout, "  preloaded the Steam client (%s) into %s\n", humanBytes(got), steamDir)
 	return nil
 }
 
 var errSteamChecksum = errors.New("checksum mismatch")
+
+// steamPackageUnion lists the packages of a, then those of b that a does not name.
+func steamPackageUnion(a, b *SteamManifest) []SteamPackage {
+	out := append([]SteamPackage(nil), a.Packages...)
+	if b == nil {
+		return out
+	}
+	seen := map[string]bool{}
+	for _, p := range a.Packages {
+		seen[p.Name] = true
+	}
+	for _, p := range b.Packages {
+		if !seen[p.Name] {
+			out = append(out, p)
+		}
+	}
+	return out
+}
 
 // steamGet downloads a small file from the Steam CDN into memory, refusing more than limit bytes.
 func steamGet(ctx context.Context, name string, limit int64) ([]byte, error) {

@@ -1,9 +1,13 @@
 package post
 
 import (
+	"archive/zip"
+	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -40,16 +44,61 @@ func sha(b []byte) string {
 	return hex.EncodeToString(h[:])
 }
 
+// makeZip builds a zip with the given members (a name ending in "/" is a directory).
+func makeZip(t *testing.T, members map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, body := range members {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.WriteString(w, body)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// makeVZ wraps data the way Valve's VZ files do, using xz's .lzma format for the LZMA stream.
+func makeVZ(t *testing.T, data []byte) []byte {
+	t.Helper()
+	cmd := exec.Command("xz", "--compress", "--stdout", "--format=lzma")
+	cmd.Stdin = bytes.NewReader(data)
+	alone, err := cmd.Output()
+	if err != nil {
+		t.Skipf("xz not available: %v", err)
+	}
+	var vz bytes.Buffer
+	vz.WriteString("VZa")
+	vz.Write([]byte{1, 2, 3, 4})
+	vz.Write(alone[:5])  // LZMA properties
+	vz.Write(alone[13:]) // the stream, after the 8-byte size
+	binary.Write(&vz, binary.LittleEndian, crc32.ChecksumIEEE(data))
+	binary.Write(&vz, binary.LittleEndian, uint32(len(data)))
+	vz.WriteString("zv")
+	return vz.Bytes()
+}
+
 // steamFixture is a fake Valve CDN: a manifest with one compressed package, one plain-zip package and their bodies.
+// The bins package holds ubuntu12_32/steamui.so; the public one uses Windows-style backslash paths, as Valve's do.
 type steamFixture struct {
 	manifest []byte
 	files    map[string][]byte
 	hits     map[string]int
 }
 
-func newSteamFixture() *steamFixture {
-	vz := []byte("compressed bins package")
-	zip := []byte("plain zip package body")
+func newSteamFixture(t *testing.T) *steamFixture {
+	t.Helper()
+	vz := makeVZ(t, makeZip(t, map[string]string{
+		"ubuntu12_32/":            "",
+		"ubuntu12_32/steamui.so":  "the UI",
+		"ubuntu12_32/steam":       "client",
+		"ubuntu12_32/libfoo.so.1": "lib",
+	}))
+	zip := makeZip(t, map[string]string{`tenfoot\resource\images\a.png`: "png", "steam.sh": "#!/bin/sh\nnew\n"})
 	vzName := fmt.Sprintf("bins_ubuntu12.zip.vz.1111111111111111111111111111111111111111_%d", len(vz))
 	zipName := "public_all.zip.2222222222222222222222222222222222222222"
 	manifest := fmt.Sprintf(`"ubuntu12"
@@ -89,7 +138,7 @@ func (f *steamFixture) serve(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		name := strings.TrimPrefix(r.URL.Path, "/")
 		f.hits[name]++
-		if name == steamManifestName {
+		if name == steamManifestName || name == steamDeckManifestName {
 			w.Write(f.manifest)
 			return
 		}
@@ -137,7 +186,7 @@ func steamTarget(t *testing.T, withBootstrap bool) (target, home string) {
 }
 
 func TestParseSteamManifestPrefersTheCompressedPackage(t *testing.T) {
-	f := newSteamFixture()
+	f := newSteamFixture(t)
 	m, err := ParseSteamManifest(f.manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -146,7 +195,7 @@ func TestParseSteamManifestPrefersTheCompressedPackage(t *testing.T) {
 		t.Fatalf("got %+v", m)
 	}
 	vz := m.Packages[0]
-	if !strings.HasPrefix(vz.Name, "bins_ubuntu12.zip.vz.") || vz.Size != int64(len("compressed bins package")) {
+	if !strings.HasPrefix(vz.Name, "bins_ubuntu12.zip.vz.") || vz.Size != int64(len(f.files[vz.Name])) {
 		t.Errorf("compressed package: %+v", vz)
 	}
 	if m.Packages[1].Name != "public_all.zip.2222222222222222222222222222222222222222" {
@@ -171,7 +220,7 @@ func TestParseSteamManifestRefusesUnsafeNames(t *testing.T) {
 func TestPreloadSteamStoresTheClientPackagesForTheNewUser(t *testing.T) {
 	target, home := steamTarget(t, true)
 	chowns := recordChown(t)
-	f := newSteamFixture()
+	f := newSteamFixture(t)
 	f.serve(t)
 
 	captureStdout(t, func() {
@@ -198,7 +247,35 @@ func TestPreloadSteamStoresTheClientPackagesForTheNewUser(t *testing.T) {
 		}
 	}
 	if _, err := os.Stat(filepath.Join(steam, "package", "steam_client_ubuntu12.installed")); err == nil {
-		t.Error("wrote the .installed marker; extracting is Steam's job")
+		t.Error("wrote the .installed marker; that is Steam's job")
+	}
+	if b, err := os.ReadFile(filepath.Join(steam, "package", "steam_client_steamdeck_stable_ubuntu12.manifest")); err != nil || !bytes.Equal(b, f.manifest) {
+		t.Errorf("steamdeck_stable manifest not stored: %v", err)
+	}
+	// The client is unpacked: steamui.so, the other files, backslash paths as folders, executables 0755.
+	for rel, want := range map[string]string{
+		"ubuntu12_32/steamui.so":        "the UI",
+		"ubuntu12_32/libfoo.so.1":       "lib",
+		"tenfoot/resource/images/a.png": "png",
+		"steam.sh":                      "#!/bin/sh\nnew\n",
+	} {
+		got, err := os.ReadFile(filepath.Join(steam, rel))
+		if err != nil || string(got) != want {
+			t.Errorf("%s: %q %v", rel, got, err)
+		}
+	}
+	if info, err := os.Stat(filepath.Join(steam, "ubuntu12_32", "steam")); err != nil || info.Mode().Perm() != 0o755 {
+		t.Errorf("ubuntu12_32/steam: %v %v", info, err)
+	}
+	if matches, _ := filepath.Glob(filepath.Join(steam, ".boppos-unpack-*")); len(matches) != 0 {
+		t.Errorf("unpack scratch left behind: %v", matches)
+	}
+	// ~/.steam links point at the Steam folder as the installed system sees it.
+	for _, name := range []string{"root", "steam"} {
+		dst, err := os.Readlink(filepath.Join(home, ".steam", name))
+		if err != nil || dst != "/home/gamer/.local/share/Steam" {
+			t.Errorf("~/.steam/%s -> %q %v", name, dst, err)
+		}
 	}
 	// Every created path goes to gamer: .local, .local/share and everything under Steam.
 	owned := map[string]bool{}
@@ -208,12 +285,14 @@ func TestPreloadSteamStoresTheClientPackagesForTheNewUser(t *testing.T) {
 		}
 		owned[c.path] = true
 	}
-	filepath.Walk(filepath.Join(home, ".local"), func(p string, _ os.FileInfo, _ error) error {
-		if !owned[p] {
-			t.Errorf("%s not handed to the user", p)
-		}
-		return nil
-	})
+	for _, top := range []string{".local", ".steam"} {
+		filepath.Walk(filepath.Join(home, top), func(p string, _ os.FileInfo, _ error) error {
+			if !owned[p] {
+				t.Errorf("%s not handed to the user", p)
+			}
+			return nil
+		})
+	}
 }
 
 func TestPreloadSteamOfflineLeavesTheHomeUntouched(t *testing.T) {
@@ -236,7 +315,7 @@ func TestPreloadSteamOfflineLeavesTheHomeUntouched(t *testing.T) {
 func TestPreloadSteamSkipsABadPackageAndKeepsTheRest(t *testing.T) {
 	target, home := steamTarget(t, true)
 	recordChown(t)
-	f := newSteamFixture()
+	f := newSteamFixture(t)
 	for name := range f.files {
 		if strings.HasPrefix(name, "bins_") {
 			f.files[name] = []byte("tampered body, same len!") // wrong hash (and size)
@@ -264,7 +343,7 @@ func TestPreloadSteamSkipsABadPackageAndKeepsTheRest(t *testing.T) {
 func TestPreloadSteamRemovesTheFolderWhenNoPackageArrives(t *testing.T) {
 	target, home := steamTarget(t, true)
 	recordChown(t)
-	f := newSteamFixture()
+	f := newSteamFixture(t)
 	f.files = map[string][]byte{} // manifest only, every package 404s
 	f.serve(t)
 
@@ -276,7 +355,7 @@ func TestPreloadSteamRemovesTheFolderWhenNoPackageArrives(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, ".local", "share", "Steam")); err == nil {
 		t.Error("left a half-made Steam folder behind")
 	}
-	if len(f.hits) != 2 {
+	if len(f.hits) != 3 { // both manifests and the first package
 		t.Errorf("kept downloading after the first failure: %v", f.hits)
 	}
 }
@@ -284,7 +363,7 @@ func TestPreloadSteamRemovesTheFolderWhenNoPackageArrives(t *testing.T) {
 func TestPreloadSteamSkipsImagesWithoutSteam(t *testing.T) {
 	target, home := steamTarget(t, false)
 	recordChown(t)
-	f := newSteamFixture()
+	f := newSteamFixture(t)
 	f.serve(t)
 
 	captureStdout(t, func() {
@@ -305,7 +384,7 @@ func TestPreloadSteamKeepsAnExistingSteamFolder(t *testing.T) {
 	recordChown(t)
 	existing := filepath.Join(home, ".local", "share", "Steam")
 	os.MkdirAll(existing, 0o700)
-	f := newSteamFixture()
+	f := newSteamFixture(t)
 	f.serve(t)
 
 	captureStdout(t, func() {
@@ -328,5 +407,51 @@ func TestPreloadSteamNeedsTheAccount(t *testing.T) {
 	captureStdout(t, func() { err = PreloadSteam(target, "nobody") })
 	if err == nil {
 		t.Error("unknown user accepted")
+	}
+}
+
+func TestPreloadSteamKeepsThePackagesWhenUnpackingFails(t *testing.T) {
+	target, home := steamTarget(t, true)
+	recordChown(t)
+	f := newSteamFixture(t)
+	f.serve(t)
+	old := xzCommand
+	xzCommand = "false"
+	t.Cleanup(func() { xzCommand = old })
+
+	var err error
+	captureStdout(t, func() { err = PreloadSteam(target, "gamer") })
+	if err == nil || !strings.Contains(err.Error(), "unpacking") {
+		t.Fatalf("want an unpack warning, got %v", err)
+	}
+	steam := filepath.Join(home, ".local", "share", "Steam")
+	if _, err := os.Stat(filepath.Join(steam, "ubuntu12_32", "steamui.so")); err == nil {
+		t.Error("steamui.so written although the unpack failed")
+	}
+	for name := range f.files {
+		if _, err := os.Stat(filepath.Join(steam, "package", name)); err != nil {
+			t.Errorf("package %s removed: %v", name, err)
+		}
+	}
+}
+
+func TestSteamMemberPathStaysInsideTheSteamFolder(t *testing.T) {
+	for _, bad := range []string{"../x", `..\x`, "/etc/passwd", `C:\x`, "a/../../x", "", "./"} {
+		if got := steamMemberPath("/s", bad); got != "" {
+			t.Errorf("%q -> %q", bad, got)
+		}
+	}
+	if got := steamMemberPath("/s", `a\b/c`); got != "/s/a/b/c" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestUnvzRejectsABadChecksum(t *testing.T) {
+	vz := makeVZ(t, []byte("hello"))
+	vz[len(vz)-10] ^= 0xff // CRC
+	src := filepath.Join(t.TempDir(), "x.vz")
+	os.WriteFile(src, vz, 0o600)
+	if err := unvz(src, src+".zip"); err == nil {
+		t.Error("bad CRC accepted")
 	}
 }
