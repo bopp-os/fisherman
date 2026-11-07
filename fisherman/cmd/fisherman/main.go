@@ -1035,6 +1035,15 @@ func main() {
 		progress.Info(fmt.Sprintf("Warning: could not copy WiFi connections: %v", err))
 	}
 
+	// Preload the Steam client for the new account while the live system is online, so the first Game Mode start
+	// does not download it behind a black screen. Never fatal: Steam downloads whatever is missing on its first start.
+	if r.PreloadSteam && r.User.Username != "" {
+		progress.Info(fmt.Sprintf("Preloading the Steam client for %s", r.User.Username))
+		if err := post.PreloadSteam(activeTargetMount, r.User.Username); err != nil {
+			progress.Info(fmt.Sprintf("Warning: Steam client not preloaded, it downloads on first start: %v", err))
+		}
+	}
+
 	// Generate friendly audio device names and hide useless outputs (S/PDIF,
 	// Pro Audio, monitor loopbacks). Writes WirePlumber rules to /etc/ so no
 	// GNOME extensions are needed. Non-fatal.
