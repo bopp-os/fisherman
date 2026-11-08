@@ -41,6 +41,11 @@ mounts, which the boot-disk rule needs.
     read_only       bool     the kernel reports the device read-only
     eligible        bool     may be offered as an install target
     excluded_reason string   present only when eligible is false; see "Exclusion rules"
+    existing_install object  present when an eligible disk holds an install a keepFiles install can reuse:
+                             an ESP and one Linux root (LUKS, or ext4/xfs/btrfs). Not unlocked, so homes are not checked.
+      root          string   the root partition (or its LUKS container), e.g. "/dev/nvme0n1p2"
+      encrypted     bool     the root is LUKS: the existing passphrase is needed
+      efi           string   the ESP, reformatted by a keepFiles install
   tpm
     present         bool     the kernel exposes a TPM of any version
     version         string   "2.0", "1.2", or "" when absent or unknown

@@ -32,6 +32,7 @@ var carriedConnectionTypes = map[string]bool{
 // nmProfile is what CopyWiFiConnections reads from a keyfile's [connection] section.
 type nmProfile struct {
 	id          string
+	uuid        string
 	connType    string
 	permissions string
 }
@@ -61,6 +62,8 @@ func parseNMProfile(data []byte) nmProfile {
 		switch strings.TrimSpace(key) {
 		case "id":
 			p.id = strings.TrimSpace(value)
+		case "uuid":
+			p.uuid = strings.TrimSpace(value)
 		case "type":
 			p.connType = strings.TrimSpace(value)
 		case "permissions":
@@ -89,8 +92,8 @@ func CopyWiFiConnections(target string) error {
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 
 	type carried struct {
-		name, id string
-		data     []byte
+		name, id, uuid string
+		data           []byte
 	}
 	var keep []carried
 	for _, e := range entries {
@@ -118,7 +121,7 @@ func CopyWiFiConnections(target string) error {
 			for _, n := range notes {
 				fmt.Fprintf(os.Stdout, "  NetworkManager profile %q: %s\n", label, n)
 			}
-			keep = append(keep, carried{name, label, portable})
+			keep = append(keep, carried{name, label, p.uuid, portable})
 		}
 	}
 	if len(keep) == 0 {
@@ -138,8 +141,30 @@ func CopyWiFiConnections(target string) error {
 		return fmt.Errorf("chmod %s: %w", dst, err)
 	}
 
+	// Profiles already in the installed system (kept from the old install by a keep-files install) win over the live
+	// session's: same file name, same uuid or same id.
+	have := map[string]bool{}
+	if existing, err := os.ReadDir(dst); err == nil {
+		for _, e := range existing {
+			have["file:"+e.Name()] = true
+			if data, err := os.ReadFile(filepath.Join(dst, e.Name())); err == nil {
+				ep := parseNMProfile(data)
+				if ep.uuid != "" {
+					have["uuid:"+ep.uuid] = true
+				}
+				if ep.id != "" {
+					have["id:"+ep.id] = true
+				}
+			}
+		}
+	}
+
 	var copied []string
 	for _, c := range keep {
+		if have["file:"+c.name] || (c.uuid != "" && have["uuid:"+c.uuid]) || have["id:"+c.id] {
+			fmt.Fprintf(os.Stdout, "  NetworkManager profile %q: the installed system already has it, kept that one\n", c.id)
+			continue
+		}
 		path := filepath.Join(dst, c.name)
 		if err := writeRootSecret(path, c.data); err != nil {
 			return fmt.Errorf("writing NetworkManager profile %q: %w", c.id, err)
@@ -148,6 +173,9 @@ func CopyWiFiConnections(target string) error {
 	}
 	// SELinux images: label the files for NetworkManager. A no-op where restorecon is missing.
 	_ = runner.Run("restorecon", "-R", dst)
+	if len(copied) == 0 {
+		return nil
+	}
 	fmt.Fprintf(os.Stdout, "  carried over NetworkManager profiles %s to %s\n", strings.Join(copied, ", "), dst)
 	return nil
 }

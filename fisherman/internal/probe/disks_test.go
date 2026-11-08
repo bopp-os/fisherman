@@ -214,3 +214,14 @@ func TestTransportLabel(t *testing.T) {
 		}
 	}
 }
+
+func TestDisksReportAnExistingInstall(t *testing.T) {
+	disks := loadDisks(t, "existing-install.json")
+	got := disks["/dev/nvme0n1"].ExistingInstall
+	if got == nil || *got != (ExistingInstall{Root: "/dev/nvme0n1p2", Encrypted: true, EFI: "/dev/nvme0n1p1"}) {
+		t.Errorf("nvme0n1: %+v", got)
+	}
+	if disks["/dev/sda"].ExistingInstall != nil {
+		t.Errorf("blank disk reported an install: %+v", disks["/dev/sda"].ExistingInstall)
+	}
+}
