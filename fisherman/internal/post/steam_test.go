@@ -455,3 +455,77 @@ func TestUnvzRejectsABadChecksum(t *testing.T) {
 		t.Error("bad CRC accepted")
 	}
 }
+
+// steam-jupiter's bootstrap is the whole client (~400 MB): Steam unpacks it on its first start, so nothing is
+// downloaded or written into the home.
+func TestPreloadSteamSkipsAnImageWhoseBootstrapIsTheWholeClient(t *testing.T) {
+	target, home := steamTarget(t, false)
+	recordChown(t)
+	deployDir, _ := DeploymentDirFn(target)
+	bootstrap := filepath.Join(deployDir, steamBootstrapRel)
+	os.MkdirAll(filepath.Dir(bootstrap), 0o755)
+	f, err := os.Create(bootstrap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(SteamFullBootstrapSize + 1); err != nil { // sparse: no 100 MB written
+		t.Fatal(err)
+	}
+	f.Close()
+	fx := newSteamFixture(t)
+	fx.serve(t)
+
+	out := captureStdout(t, func() {
+		if err := PreloadSteam(target, "gamer"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "bootstrap is the whole client") {
+		t.Errorf("log: %s", out)
+	}
+	if len(fx.hits) != 0 {
+		t.Errorf("contacted the CDN: %v", fx.hits)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".local")); err == nil {
+		t.Error("wrote into the home")
+	}
+}
+
+func TestPreloadSteamSkipsASmallBootstrapThatHoldsSteamUI(t *testing.T) {
+	target, home := steamTarget(t, false)
+	recordChown(t)
+	deployDir, _ := DeploymentDirFn(target)
+	src := t.TempDir()
+	os.MkdirAll(filepath.Join(src, "ubuntu12_32"), 0o755)
+	os.WriteFile(filepath.Join(src, "ubuntu12_32", "steamui.so"), []byte("ui"), 0o644)
+	dir := filepath.Join(deployDir, "usr", "lib", "steam")
+	os.MkdirAll(dir, 0o755)
+	if out, err := exec.Command("tar", "-cJf", filepath.Join(dir, "bootstraplinux_ubuntu12_32.tar.xz"),
+		"-C", src, "ubuntu12_32").CombinedOutput(); err != nil {
+		t.Skipf("cannot build an xz tarball here: %v %s", err, out)
+	}
+	fx := newSteamFixture(t)
+	fx.serve(t)
+
+	out := captureStdout(t, func() {
+		if err := PreloadSteam(target, "gamer"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "contains ubuntu12_32/steamui.so") || len(fx.hits) != 0 {
+		t.Errorf("hits %v, log: %s", fx.hits, out)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".local")); err == nil {
+		t.Error("wrote into the home")
+	}
+}
+
+func TestSteamBootstrapIsFullClientKeepsThePlainBootstrap(t *testing.T) {
+	target, _ := steamTarget(t, true) // steam.sh + ubuntu12_32/steam, no steamui.so
+	deployDir, _ := DeploymentDirFn(target)
+	path := filepath.Join(deployDir, steamBootstrapRel)
+	info, _ := os.Stat(path)
+	if full, why := steamBootstrapIsFullClient(path, info.Size()); full {
+		t.Errorf("plain bootstrap counted as the client: %s", why)
+	}
+}
