@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/tuna-os/fisherman/internal/disk"
 )
 
 // MinDiskBytes is the smallest disk offered for installation: 50 GiB. It is
@@ -67,13 +69,23 @@ type Disk struct {
 	ReadOnly       bool   `json:"read_only"`
 	Eligible       bool   `json:"eligible"`
 	ExcludedReason string `json:"excluded_reason,omitempty"`
+	// ExistingInstall is set when the disk holds an install a keepFiles install can reinstall over: an ESP and one
+	// Linux root (LUKS or ext4/xfs/btrfs). Whether the root really holds homes is only known once it is unlocked.
+	ExistingInstall *ExistingInstall `json:"existing_install,omitempty"`
+}
+
+// ExistingInstall is the part of an existing install the UI shows.
+type ExistingInstall struct {
+	Root      string `json:"root"`
+	Encrypted bool   `json:"encrypted"`
+	EFI       string `json:"efi"`
 }
 
 // lsblkColumns are the columns Disks asks for. MOUNTPOINTS needs util-linux
 // 2.37; lsblkColumnsLegacy is the fallback for older hosts.
 const (
-	lsblkColumns       = "NAME,KNAME,TYPE,SIZE,MODEL,VENDOR,TRAN,RM,HOTPLUG,RO,MOUNTPOINTS"
-	lsblkColumnsLegacy = "NAME,KNAME,TYPE,SIZE,MODEL,VENDOR,TRAN,RM,HOTPLUG,RO,MOUNTPOINT"
+	lsblkColumns       = "NAME,KNAME,TYPE,SIZE,MODEL,VENDOR,TRAN,RM,HOTPLUG,RO,MOUNTPOINTS,FSTYPE,PARTTYPE,LABEL,PARTLABEL"
+	lsblkColumnsLegacy = "NAME,KNAME,TYPE,SIZE,MODEL,VENDOR,TRAN,RM,HOTPLUG,RO,MOUNTPOINT,FSTYPE,PARTTYPE,LABEL,PARTLABEL"
 )
 
 // lsblkDevice is one node of `lsblk -J -b -p` tree output. Booleans and the
@@ -91,6 +103,10 @@ type lsblkDevice struct {
 	RO          flexBool      `json:"ro"`
 	Mountpoint  *string       `json:"mountpoint"`
 	Mountpoints []*string     `json:"mountpoints"`
+	FSType      *string       `json:"fstype"`
+	PartType    *string       `json:"parttype"`
+	Label       *string       `json:"label"`
+	PartLabel   *string       `json:"partlabel"`
 	Children    []lsblkDevice `json:"children"`
 }
 
@@ -139,6 +155,18 @@ func toDisk(dev lsblkDevice) Disk {
 	}
 	d.ExcludedReason = excludedReason(dev)
 	d.Eligible = d.ExcludedReason == ""
+	if d.Eligible {
+		var parts []disk.PartInfo
+		for _, c := range dev.Children {
+			if c.Type == "part" {
+				parts = append(parts, disk.PartInfo{Name: c.Name, FSType: str(c.FSType), PartType: str(c.PartType),
+					Label: str(c.Label), PartLabel: str(c.PartLabel), Size: int64(c.Size)})
+			}
+		}
+		if l, err := disk.LayoutFromParts(parts); err == nil {
+			d.ExistingInstall = &ExistingInstall{Root: l.Root, Encrypted: l.RootLUKS, EFI: l.EFI}
+		}
+	}
 	return d
 }
 

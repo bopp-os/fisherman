@@ -337,3 +337,26 @@ func TestEncryptionChoicesFile(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckKeepFiles(t *testing.T) {
+	ok := recipe.Recipe{KeepFiles: true, Encryption: recipe.Encryption{Type: "luks-passphrase", Passphrase: "x"}}
+	if ps := recipe.CheckKeepFiles(&ok); len(ps) != 0 {
+		t.Errorf("valid keep-files recipe refused: %v", ps)
+	}
+	off := recipe.Recipe{Filesystem: "zfs", Encryption: recipe.Encryption{Type: "tpm2-luks"}}
+	if ps := recipe.CheckKeepFiles(&off); len(ps) != 0 {
+		t.Errorf("keepFiles off but refused: %v", ps)
+	}
+	for name, r := range map[string]recipe.Recipe{
+		"zfs":          {KeepFiles: true, Filesystem: "zfs"},
+		"tpm2-luks":    {KeepFiles: true, Encryption: recipe.Encryption{Type: "tpm2-luks"}},
+		"composefs":    {KeepFiles: true, ComposeFsBackend: true},
+		"var disk":     {KeepFiles: true, VarDisk: &recipe.VarDiskSpec{Disk: "/dev/sdb"}},
+		"customMounts": {KeepFiles: true, CustomMounts: []recipe.CustomMount{{Partition: "/dev/sda2", Target: "/"}}},
+	} {
+		ps := recipe.CheckKeepFiles(&r)
+		if len(ps) != 1 || ps[0].Code != recipe.CodeKeepFilesUnsupported || ps[0].Field != "keepFiles" {
+			t.Errorf("%s: %v", name, ps)
+		}
+	}
+}

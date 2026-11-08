@@ -503,6 +503,8 @@ func main() {
 	var activeRootPart string  // only used for TPM2 enrolment, empty in manual mode
 	var activeLuksUUID string  // LUKS partition UUID for boot entry injection; empty if no encryption
 	var luksRecoveryKey string // random passphrase for tpm2-luks (emitted as recovery key)
+	var kept *post.KeptFiles   // keepFiles: the homes and settings moved aside before bootc
+	var keepFS string          // keepFiles: the kept root filesystem type
 
 	if isManual {
 		// ── Step 1 (manual): Format and mount user-specified partitions ────────
@@ -534,7 +536,68 @@ func main() {
 		pi++
 		step++
 
-		if r.Filesystem == "zfs" {
+		var keepLayout disk.ExistingLayout
+		var keptRootDev string
+		if r.KeepFiles {
+			// Everything that can fail on a wrong disk or passphrase happens here, before anything is formatted.
+			progress.Info("Keeping your files: the disk is not repartitioned")
+			var err error
+			if err := disk.ReleaseDisk(r.Disk); err != nil {
+				fatal("keeping files: releasing %s: %v", r.Disk, err)
+			}
+			keepLayout, err = disk.FindExistingLayout(r.Disk)
+			if err != nil {
+				fatal("keeping files: %v; choose Erase disk instead", err)
+			}
+			if !isSystemdBoot && keepLayout.Boot == "" {
+				fatal("keeping files: %s has no separate ext4 /boot partition, which a grub install needs; choose Erase disk instead", r.Disk)
+			}
+			if keepLayout.RootLUKS && !hasEncryption {
+				fatal("keeping files: %s is encrypted; the existing passphrase is needed to unlock it", keepLayout.Root)
+			}
+			if !keepLayout.RootLUKS && hasEncryption {
+				fatal("keeping files: %s is not encrypted; a keep-files install cannot add encryption, choose Erase disk to encrypt", keepLayout.Root)
+			}
+			progress.Info(fmt.Sprintf("Existing install: root %s (encrypted: %v), EFI %s", keepLayout.Root, keepLayout.RootLUKS, keepLayout.EFI))
+			keptRootDev = keepLayout.Root
+			if keepLayout.RootLUKS {
+				if _, err := os.Stat(luks.MapperPath(luksMapper)); err == nil {
+					progress.Info(fmt.Sprintf("Closing stale mapper %s from previous run", luksMapper))
+					_ = luks.Close(luksMapper)
+				}
+				if err := luks.Open(keepLayout.Root, r.Encryption.Passphrase, luksMapper); err != nil {
+					fatal("keeping files: could not unlock %s (wrong passphrase?): %v", keepLayout.Root, err)
+				}
+				cleanup.SetLUKS(luksMapper)
+				keptRootDev = luks.MapperPath(luksMapper)
+				activeLuksUUID = luks.UUID(keepLayout.Root)
+			}
+			fstype := disk.FSType(keptRootDev)
+			if fstype != "ext4" && fstype != "xfs" && fstype != "btrfs" {
+				fatal("keeping files: the root filesystem is %q; only ext4, xfs and btrfs can be kept", fstype)
+			}
+			keepFS = fstype
+			if err := os.MkdirAll(targetMount, 0o755); err != nil {
+				fatal("creating mount point %s: %v", targetMount, err)
+			}
+			opts := installMountOpts(fstype)
+			if fstype == "btrfs" {
+				opts = "subvolid=5," + opts // the top level: the old subvolumes are deleted below
+			}
+			if err := disk.MountType(keptRootDev, targetMount, fstype, strings.TrimSuffix(opts, ",")); err != nil {
+				fatal("keeping files: mounting %s: %v", keptRootDev, err)
+			}
+			cleanup.AddMount(targetMount)
+			kept, err = post.PrepareKeptFiles(targetMount, fstype)
+			if err != nil {
+				fatal("keeping files: %v", err)
+			}
+			// bootc requires an empty root; a mount point is allowed, so the kept files sit behind a self-bind.
+			if err := bindMount(kept.Dir, kept.Dir); err != nil {
+				fatal("keeping files: %v", err)
+			}
+			cleanup.AddMount(kept.Dir)
+		} else if r.Filesystem == "zfs" {
 			if err := disk.PartitionZFS(r.Disk); err != nil {
 				fatal("partitioning disk for ZFS: %v", err)
 			}
@@ -555,7 +618,9 @@ func main() {
 		}
 
 		var efiPart, bootPart, rootPart string
-		if isSystemdBoot {
+		if r.KeepFiles {
+			efiPart, bootPart, rootPart = keepLayout.EFI, keepLayout.Boot, keepLayout.Root
+		} else if isSystemdBoot {
 			// 2-partition layout: p1=EFI (1 GiB FAT32), p2=root (or ZFS pool).
 			// No separate ext4 /boot needed — systemd-boot reads directly from
 			// the FAT32 ESP. LUKS (if any) wraps p2.
@@ -569,6 +634,9 @@ func main() {
 			rootPart = disk.PartName(r.Disk, 3)
 		}
 		rootDev := rootPart // may be replaced by /dev/mapper/fisherman-root if LUKS
+		if r.KeepFiles {
+			rootDev = keptRootDev
+		}
 		activeRootPart = rootPart
 		poolName := disk.PoolName(r.ZFSPoolName) // only used when r.Filesystem == "zfs"
 
@@ -612,15 +680,19 @@ func main() {
 				_ = luks.Close(luksMapper)
 			}
 
-			if err := luks.Format(rootPart, passphrase); err != nil {
-				fatal("LUKS format: %v", err)
+			if r.KeepFiles {
+				progress.Info("Keeping the existing encryption (unlocked above)")
+			} else {
+				if err := luks.Format(rootPart, passphrase); err != nil {
+					fatal("LUKS format: %v", err)
+				}
+				if err := luks.Open(rootPart, passphrase, luksMapper); err != nil {
+					fatal("LUKS open: %v", err)
+				}
+				cleanup.SetLUKS(luksMapper)
+				rootDev = luks.MapperPath(luksMapper)
+				activeLuksUUID = luks.UUID(rootPart)
 			}
-			if err := luks.Open(rootPart, passphrase, luksMapper); err != nil {
-				fatal("LUKS open: %v", err)
-			}
-			cleanup.SetLUKS(luksMapper)
-			rootDev = luks.MapperPath(luksMapper)
-			activeLuksUUID = luks.UUID(rootPart)
 		}
 
 		// ── Step 4: Format root filesystem ──────────────────────────────────
@@ -628,7 +700,9 @@ func main() {
 		pi++
 		step++
 
-		if r.Filesystem == "zfs" {
+		if r.KeepFiles {
+			progress.Info(fmt.Sprintf("Keeping the existing %s root filesystem", keepFS))
+		} else if r.Filesystem == "zfs" {
 			if err := disk.CreateZFSPool(poolName, rootPart, targetMount); err != nil {
 				fatal("creating ZFS pool: %v", err)
 			}
@@ -650,7 +724,9 @@ func main() {
 			fatal("creating mount point %s: %v", targetMount, err)
 		}
 
-		if r.Filesystem == "zfs" {
+		if r.KeepFiles {
+			// Mounted in step 1, before the kept files were moved aside.
+		} else if r.Filesystem == "zfs" {
 			// Pool is already imported with -R altroot; root dataset is already
 			// mounted. Ensure the mount point exists and call MountZFSRoot in
 			// case the automount didn't fire (e.g. in a container environment).
@@ -666,7 +742,9 @@ func main() {
 				fatal("mounting root: %v", err)
 			}
 		}
-		cleanup.AddMount(targetMount)
+		if !r.KeepFiles {
+			cleanup.AddMount(targetMount)
+		}
 
 		// Mount the unencrypted /boot partition before the EFI partition.
 		// bootupctl reads /boot's block device UUID from the raw partition.
@@ -991,6 +1069,17 @@ func main() {
 			Groups:   r.User.Groups,
 		}); err != nil {
 			fatal("creating user: %v", err)
+		}
+	}
+
+	// Keep-files install: move the kept homes and Wi-Fi profiles into the new system, before the Wi-Fi carry-over and
+	// the Steam preload (both leave what is already there alone).
+	if kept != nil {
+		if err := cleanup.Unmount(kept.Dir); err != nil {
+			fatal("keeping files: unmounting %s: %v", kept.Dir, err)
+		}
+		if err := post.RestoreKeptFiles(activeTargetMount, r.User.Username, kept); err != nil {
+			progress.Info(fmt.Sprintf("Warning: %v", err))
 		}
 	}
 

@@ -148,6 +148,7 @@ holds both fields.
 | `targetMount` | empty is valid (`/mnt/fisherman-target`). Otherwise an absolute path with no `..` component that is not `/`: the root filesystem is mounted there and every post-install write goes under it. | `target_mount_invalid` |
 | `flatpakVarPath` | empty is valid (auto-detect). Otherwise no `..` component: it is joined under the installed root for the flatpak copy. | `flatpak_var_path_invalid` |
 | `varDisk.disk` | required, exists, differs from `disk` | `var_disk_required`, `var_disk_not_found`, `var_disk_same_as_disk` |
+| `keepFiles` | not with `customMounts`, ZFS, `composeFsBackend`, `varDisk` or `tpm2-luks`. Whether `disk` holds an install to keep (an ESP, one root, homes on it) and whether the passphrase unlocks it is checked by the install, before it changes anything. | `keep_files_unsupported` |
 | `image` | non-empty unless this host booted from live media (probe's `live.is_live`), where empty means "install the running live image". Full mode only. | `image_required` |
 | `imageType` | `""` or `bootc` | `image_type_unsupported` |
 | `bootloader` | `""`, `grub2` or `systemd` | `bootloader_unsupported` |
@@ -238,6 +239,7 @@ This section maps error codes to their causes and corrective actions. Each code 
 | `encryption_unsupported_on_manual_layout` | `encryption.type` | Encryption is not supported with custom mount layout | Use auto layout, or disable encryption |
 | `encryption_tpm_unavailable` | `encryption.type` | TPM 2.0 is required but not available or not usable on this system | Choose `luks-passphrase` instead, or enable TPM in BIOS |
 | `encryption_passphrase_required` | `encryption.passphrase` | A passphrase is required for this encryption type but is empty | Provide a non-empty passphrase |
+| `keep_files_unsupported` | `keepFiles` | A keep-files reinstall cannot be combined with this setting | Erase the disk instead, or drop the setting |
 
 ### Hostname
 

@@ -81,6 +81,13 @@ type Recipe struct {
 	// When set, fisherman formats (or mounts as-is) this disk before running
 	// bootc, then adds a /var entry to the installed system's fstab.
 	VarDisk *VarDiskSpec `json:"varDisk,omitempty"`
+	// KeepFiles reinstalls over the existing install on Disk instead of erasing it: no partitioning, the root
+	// filesystem (and its LUKS container, unlocked with Encryption.Passphrase) is kept, the old homes and Wi-Fi
+	// profiles move into the new install, and everything else of the old system is deleted. The ESP (and a grub
+	// layout's ext4 /boot) are reformatted. Encryption.Type says how the container is unlocked: "none" for a plain
+	// root, "luks-passphrase" to keep its keyslots and TPM2 token as they are, "tpm2-luks-passphrase" to also re-enroll
+	// the TPM2 on the first boot.
+	KeepFiles bool `json:"keepFiles,omitempty"`
 	// AdditionalImageStores lists host paths to be exposed to the bootc
 	// container as containers/storage additionalimagestores. Each path is
 	// bind-mounted read-only into the container at the same location and added
@@ -265,6 +272,7 @@ func (r *Recipe) Problems() []Problem {
 		ps = append(ps, CheckFilesystem(r.Filesystem)...)
 		ps = append(ps, CheckLayoutCombos(r)...)
 	}
+	ps = append(ps, CheckKeepFiles(r)...)
 	ps = append(ps, CheckImageType(r.ImageType)...)
 	ps = append(ps, CheckBootloader(r.Bootloader)...)
 	ps = append(ps, CheckEncryption(r.Encryption)...)

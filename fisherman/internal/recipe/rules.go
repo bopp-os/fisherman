@@ -71,6 +71,7 @@ const (
 	CodeCustomMountTargetInvalid      = "custom_mount_target_invalid"
 	CodeTargetMountInvalid            = "target_mount_invalid"
 	CodeFlatpakVarPathInvalid         = "flatpak_var_path_invalid"
+	CodeKeepFilesUnsupported          = "keep_files_unsupported"
 )
 
 // Filesystems is the set of root filesystems the auto-partition path can
@@ -439,4 +440,30 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// CheckKeepFiles refuses keepFiles combinations the keep-files path cannot do. Whether the disk really holds an install
+// to keep is checked by the install itself, before it changes anything.
+func CheckKeepFiles(r *Recipe) []Problem {
+	if !r.KeepFiles {
+		return nil
+	}
+	bad := func(msg string) Problem { return Problem{"keepFiles", CodeKeepFilesUnsupported, "keepFiles: " + msg} }
+	var ps []Problem
+	if len(r.CustomMounts) > 0 {
+		ps = append(ps, bad("not supported with customMounts"))
+	}
+	if r.Filesystem == "zfs" {
+		ps = append(ps, bad("not supported on ZFS"))
+	}
+	if r.ComposeFsBackend {
+		ps = append(ps, bad("not supported with the composefs backend (homes are made on the first boot)"))
+	}
+	if r.VarDisk != nil {
+		ps = append(ps, bad("not supported with a separate /var disk"))
+	}
+	if r.Encryption.Type == "tpm2-luks" {
+		ps = append(ps, bad("tpm2-luks makes a new random key; use luks-passphrase or tpm2-luks-passphrase with the existing passphrase"))
+	}
+	return ps
 }

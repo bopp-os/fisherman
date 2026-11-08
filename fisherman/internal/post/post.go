@@ -50,6 +50,22 @@ func (c *Cleanup) AddMount(path string) {
 	c.mounts = append(c.mounts, path)
 }
 
+// Unmount unmounts a registered mount point now and drops it from the list, so Run does not try it again.
+func (c *Cleanup) Unmount(path string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := runner.Run("umount", path); err != nil {
+		return err
+	}
+	for i := len(c.mounts) - 1; i >= 0; i-- {
+		if c.mounts[i] == path {
+			c.mounts = append(c.mounts[:i], c.mounts[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
+
 func (c *Cleanup) SetLUKS(name string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
