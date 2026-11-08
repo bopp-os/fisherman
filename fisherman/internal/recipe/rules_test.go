@@ -213,7 +213,7 @@ func TestCheckImageTypeAndBootloader(t *testing.T) {
 			t.Errorf("CheckImageType(%q) = %q, want %q", in, got, want)
 		}
 	}
-	for in, want := range map[string]string{"": "", "grub2": "", "systemd": "", "grub": recipe.CodeBootloaderUnsupported} {
+	for in, want := range map[string]string{"": "", "grub2": "", "systemd": "", "grub-external": "", "grub": recipe.CodeBootloaderUnsupported} {
 		if got := code(t, recipe.CheckBootloader(in)); got != want {
 			t.Errorf("CheckBootloader(%q) = %q, want %q", in, got, want)
 		}

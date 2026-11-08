@@ -133,7 +133,7 @@ func TestEnrollTPM2(t *testing.T) {
 	const pass = "hunter2"
 
 	rec := setup(t)
-	if err := luks.EnrollTPM2(part, pass); err != nil {
+	if err := luks.EnrollTPM2(part, pass, "7"); err != nil {
 		t.Fatalf("EnrollTPM2: %v", err)
 	}
 
@@ -296,4 +296,16 @@ func equalSlice(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestEnrollTPM2_NoPCRs pins the install-time token: bound to the TPM only, so the first boot unlocks before the
+// first-boot service can seal against the installed system's PCR 7.
+func TestEnrollTPM2_NoPCRs(t *testing.T) {
+	rec := setup(t)
+	if err := luks.EnrollTPM2("/dev/sda3", "hunter2", ""); err != nil {
+		t.Fatalf("EnrollTPM2: %v", err)
+	}
+	if len(rec.calls) != 1 || rec.calls[0].args[1] != "--tpm2-pcrs=" {
+		t.Fatalf("want --tpm2-pcrs= (empty), got %v", rec.calls)
+	}
 }

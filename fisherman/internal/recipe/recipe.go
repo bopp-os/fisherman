@@ -34,8 +34,11 @@ type Recipe struct {
 	// ZFSPoolName is the name of the ZFS pool to create (default: "rpool").
 	// Only used when Filesystem is "zfs".
 	ZFSPoolName string `json:"zfsPoolName,omitempty"`
-	// Bootloader selects the bootloader: "grub2" (default) or "systemd".
+	// Bootloader selects the bootloader: "grub2" (default), "systemd", or "grub-external".
 	// Use "systemd" for images that ship systemd-boot (e.g. Project Bluefin/Dakota).
+	// "grub-external" is for ostree images without bootupd: bootc installs with
+	// --bootloader none, then fisherman runs grub-install from the live system and
+	// points ostree at grub2 so upgrades keep grub.cfg current (the image needs grub).
 	Bootloader string `json:"bootloader"`
 	// KernelArgs are extra kernel arguments for the installed system, passed
 	// to bootc install as one --karg each (e.g. hardware presets,
@@ -49,13 +52,26 @@ type Recipe struct {
 	// auto-detects based on whether the system is ostree or composefs-native.
 	// Override in images.json for non-standard layouts, e.g. GnomeOS/Dakota:
 	//   "flatpak_var_path": "state/os/default/var"
-	FlatpakVarPath string   `json:"flatpakVarPath,omitempty"`
-	Hostname       string   `json:"hostname"`
-	Flatpaks       []string `json:"flatpaks"` // flatpak app IDs to install; empty = fallback
+	FlatpakVarPath string `json:"flatpakVarPath,omitempty"`
+	Hostname       string `json:"hostname"`
+	// Locale (LANG, e.g. "en_US.UTF-8"), Keymap (console keymap, e.g. "us") and
+	// Timezone (zoneinfo name, e.g. "Europe/Berlin") are written to the installed
+	// system when set; empty leaves the image's own setting.
+	// FirstRun ("welcome" or "oobe") makes fisherman write /var/lib/<distroID>/first-run so the first boot
+	// knows whether an account exists. Empty writes nothing.
+	FirstRun string   `json:"firstRun,omitempty"`
+	Locale   string   `json:"locale,omitempty"`
+	Keymap   string   `json:"keymap,omitempty"`
+	Timezone string   `json:"timezone,omitempty"`
+	Flatpaks []string `json:"flatpaks"` // flatpak app IDs to install; empty = fallback
 	// SkipFlatpaks turns the Flatpak step into a no-op: nothing is copied from
 	// the host and the fallback set is not downloaded. For images that ship
 	// their own app selection.
-	SkipFlatpaks bool     `json:"skipFlatpaks,omitempty"`
+	SkipFlatpaks bool `json:"skipFlatpaks,omitempty"`
+	// PreloadSteam downloads the Steam client into the new user's ~/.local/share/Steam at install time (images that
+	// boot into Steam's Game Mode), so the first start does not fetch it behind a black screen. Best effort: offline or
+	// on a failed download the install goes on and Steam downloads the client on its first start.
+	PreloadSteam bool     `json:"preloadSteam,omitempty"`
 	User         UserSpec `json:"user"` // optional user account to create
 	// CustomMounts is set for manual partitioning. When non-empty, Disk/Filesystem/
 	// BtrfsSubvolumes and the auto-partition steps are skipped; fisherman formats and

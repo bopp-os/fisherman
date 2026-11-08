@@ -136,7 +136,16 @@ func probeOverlay(scratchPath string) error {
 
 	// Run `podman --root <probeRoot> --storage-driver overlay info` to check overlay support.
 	// If overlay is not available or doesn't work on this root, podman will error.
-	name, args := runner.HostArgs("podman", []string{"--root", probeRoot, "--storage-driver", "overlay", "info", "--format", "json"})
+	// Its own runroot: podman caches "overlay unsupported" under the runroot, which
+	// is /run/containers/storage unless given. An earlier podman call against the
+	// live ISO's default store (on its overlayfs, where overlay really is unsupported)
+	// would otherwise make this probe fail too.
+	probeRunRoot := scratchPath + "/.overlay-probe-run"
+	if err := os.MkdirAll(probeRunRoot, 0755); err != nil {
+		return fmt.Errorf("creating probe runroot: %w", err)
+	}
+	defer os.RemoveAll(probeRunRoot)
+	name, args := runner.HostArgs("podman", []string{"--root", probeRoot, "--runroot", probeRunRoot, "--storage-driver", "overlay", "info", "--format", "json"})
 	cmd := CommandFn(name, args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("podman probe failed: %w (output: %s)", err, output)

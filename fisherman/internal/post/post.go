@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -281,13 +282,16 @@ var DeploymentDirFn = DefaultDeploymentDir
 // /ostree/deploy/*/deploy/* finds nothing because the deployment is under
 // /state/ — a fatal `finding deployment dir` crash on composefs images.
 func isComposeFsNative(sysroot string) bool {
-	// Use ls via runner (not os.Stat), which runs in the host mount namespace
-	// rather than any sandbox. composefs-native ⟺ state/deploy exists.
-	if err := runner.Run("ls", filepath.Join(sysroot, "state", "deploy")); err == nil {
+	// Use test -d via runner (not os.Stat), which runs in the host mount
+	// namespace rather than any sandbox. composefs-native ⟺ state/deploy
+	// exists. test prints nothing when the directory is missing, the usual
+	// answer on ostree installs; ls filled every ostree install log with
+	// "cannot access .../state/deploy" lines that read like errors.
+	if err := runner.Run("test", "-d", filepath.Join(sysroot, "state", "deploy")); err == nil {
 		return true
 	}
 	// Legacy signal retained: a deployment with no /ostree at all is composefs.
-	return runner.Run("ls", filepath.Join(sysroot, "ostree")) != nil
+	return runner.Run("test", "-d", filepath.Join(sysroot, "ostree")) != nil
 }
 
 // IsComposeFsNativeExported is a public wrapper for isComposeFsNative,
@@ -297,27 +301,37 @@ func IsComposeFsNativeExported(sysroot string) bool {
 	return isComposeFsNative(sysroot)
 }
 
-// WriteHostname writes /etc/hostname into the installed system at target.
-// For composefs-native deployments, the hostname goes into the active deploy
-// etc dir (found via ComposeFsDeployEtcDirFn). For ostree-based deployments
-// it goes into the ostree deployment subtree (found via DeploymentDirFn).
-func WriteHostname(target, hostname string) error {
+// deployEtcDir returns the active deployment's etc directory at target, created
+// if missing: the composefs deploy etc, or the ostree deployment's etc.
+func deployEtcDir(target string) (string, error) {
 	var etcDir string
 	if isComposeFsNative(target) {
 		var err error
 		etcDir, err = ComposeFsDeployEtcDirFn(target)
 		if err != nil {
-			return fmt.Errorf("finding composefs deploy etc: %w", err)
+			return "", fmt.Errorf("finding composefs deploy etc: %w", err)
 		}
 	} else {
 		deployDir, err := DeploymentDirFn(target)
 		if err != nil {
-			return fmt.Errorf("finding deployment dir: %w", err)
+			return "", fmt.Errorf("finding deployment dir: %w", err)
 		}
 		etcDir = filepath.Join(deployDir, "etc")
 	}
 	if err := runner.Run("mkdir", "-p", etcDir); err != nil {
-		return fmt.Errorf("mkdir %s: %w", etcDir, err)
+		return "", fmt.Errorf("mkdir %s: %w", etcDir, err)
+	}
+	return etcDir, nil
+}
+
+// WriteHostname writes /etc/hostname into the installed system at target.
+// For composefs-native deployments, the hostname goes into the active deploy
+// etc dir (found via ComposeFsDeployEtcDirFn). For ostree-based deployments
+// it goes into the ostree deployment subtree (found via DeploymentDirFn).
+func WriteHostname(target, hostname string) error {
+	etcDir, err := deployEtcDir(target)
+	if err != nil {
+		return err
 	}
 	hostnameFile := filepath.Join(etcDir, "hostname")
 	data := []byte(hostname + "\n")
@@ -325,6 +339,93 @@ func WriteHostname(target, hostname string) error {
 		return fmt.Errorf("write %s: %w", hostnameFile, err)
 	}
 	fmt.Fprintf(os.Stdout, "  wrote hostname %q to %s\n", hostname, hostnameFile)
+	return nil
+}
+
+var (
+	localeRe   = regexp.MustCompile(`^[A-Za-z]{2,3}(_[A-Za-z0-9]{2,})?(\.[A-Za-z0-9-]+)?(@[A-Za-z0-9]+)?$`)
+	keymapRe   = regexp.MustCompile(`^[A-Za-z0-9_.+-]{1,40}$`)
+	timezoneRe = regexp.MustCompile(`^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+){0,2}$`)
+)
+
+// WriteLocale writes the language, console keymap and timezone the user chose
+// into the installed system's etc: locale.conf (LANG), vconsole.conf (KEYMAP)
+// and the localtime symlink. An empty value is left unset. A value that is not
+// a plain locale, keymap or zoneinfo name is refused, since the timezone becomes
+// a symlink target.
+func WriteLocale(target, locale, keymap, timezone string) error {
+	if locale == "" && keymap == "" && timezone == "" {
+		return nil
+	}
+	if locale != "" && !localeRe.MatchString(locale) {
+		return fmt.Errorf("invalid locale %q", locale)
+	}
+	if keymap != "" && !keymapRe.MatchString(keymap) {
+		return fmt.Errorf("invalid keymap %q", keymap)
+	}
+	if timezone != "" && (!timezoneRe.MatchString(timezone) || strings.Contains(timezone, "..")) {
+		return fmt.Errorf("invalid timezone %q", timezone)
+	}
+	etcDir, err := deployEtcDir(target)
+	if err != nil {
+		return err
+	}
+	write := func(name, content string) error {
+		path := filepath.Join(etcDir, name)
+		if err := runner.RunWithStdin(strings.NewReader(content), "tee", path); err != nil {
+			return fmt.Errorf("write %s: %w", path, err)
+		}
+		fmt.Fprintf(os.Stdout, "  wrote %s\n", path)
+		return nil
+	}
+	if locale != "" {
+		if err := write("locale.conf", "LANG="+locale+"\n"); err != nil {
+			return err
+		}
+	}
+	if keymap != "" {
+		if err := write("vconsole.conf", "KEYMAP="+keymap+"\n"); err != nil {
+			return err
+		}
+	}
+	if timezone != "" {
+		link := filepath.Join(etcDir, "localtime")
+		if err := runner.Run("ln", "-sf", "../usr/share/zoneinfo/"+timezone, link); err != nil {
+			return fmt.Errorf("link %s: %w", link, err)
+		}
+		fmt.Fprintf(os.Stdout, "  linked %s to %s\n", link, timezone)
+	}
+	return nil
+}
+
+var (
+	firstRunDistroRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+	firstRunModes    = map[string]bool{"welcome": true, "oobe": true}
+)
+
+// WriteFirstRun records how the first boot should start: /var/lib/<distroID>/first-run holding
+// "mode=welcome" (an account was created, so the welcome tour runs) or "mode=oobe" (no account yet, so the
+// first-boot setup creates one). It goes in the stateroot var, which is what the booted system sees as /var.
+func WriteFirstRun(target, distroID, mode string) error {
+	if !firstRunModes[mode] {
+		return fmt.Errorf("invalid first-run mode %q", mode)
+	}
+	if !firstRunDistroRe.MatchString(distroID) {
+		return fmt.Errorf("invalid distro id %q for the first-run marker", distroID)
+	}
+	varDir := filepath.Join(target, "ostree", "deploy", "default", "var")
+	if isComposeFsNative(target) {
+		varDir = ComposeFsVarDir(target)
+	}
+	dir := filepath.Join(varDir, "lib", distroID)
+	if err := runner.Run("mkdir", "-p", dir); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	path := filepath.Join(dir, "first-run")
+	if err := runner.RunWithStdin(strings.NewReader("mode="+mode+"\n"), "tee", path); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	fmt.Fprintf(os.Stdout, "  wrote first-run marker %s (mode=%s)\n", path, mode)
 	return nil
 }
 
@@ -650,71 +751,6 @@ func CopyBluetoothPairings(target string) error {
 	_ = runner.Run("restorecon", "-R", dst)
 
 	fmt.Fprintf(os.Stdout, "  copied Bluetooth pairings to %s\n", dst)
-	return nil
-}
-
-// CopyWiFiConnections copies NetworkManager connection profiles from the live
-// session to the installed system so WiFi connects automatically on first boot.
-// Non-fatal: if no connections exist or the copy fails, the system still boots.
-func CopyWiFiConnections(target string) error {
-	const src = "/etc/NetworkManager/system-connections"
-	info, err := os.Stat(src)
-	if err != nil || !info.IsDir() {
-		return nil //nolint:nilerr // no NM connections → nothing to do
-	}
-
-	entries, err := os.ReadDir(src)
-	if err != nil || len(entries) == 0 {
-		return nil //nolint:nilerr // best-effort: absent/unreadable source → skip, continue
-	}
-
-	// Only copy .nmconnection files (skip other config).
-	var hasConnections bool
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".nmconnection") {
-			hasConnections = true
-			break
-		}
-	}
-	if !hasConnections {
-		return nil
-	}
-
-	// Resolve the target NM connections path (composefs-native vs ostree).
-	var dst string
-	if isComposeFsNative(target) {
-		etcDir, err := ComposeFsDeployEtcDirFn(target)
-		if err != nil {
-			return fmt.Errorf("finding composefs deploy etc for WiFi connections: %w", err)
-		}
-		dst = filepath.Join(etcDir, "NetworkManager", "system-connections")
-	} else {
-		deployDir, err := DeploymentDirFn(target)
-		if err != nil {
-			return fmt.Errorf("finding deployment dir for NM connections: %w", err)
-		}
-		dst = filepath.Join(deployDir, "etc", "NetworkManager", "system-connections")
-	}
-
-	if err := runner.Run("mkdir", "-p", dst); err != nil {
-		return fmt.Errorf("mkdir %s: %w", dst, err)
-	}
-
-	// Copy only .nmconnection files preserving permissions (they contain passwords, mode 0600).
-	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".nmconnection") {
-			continue
-		}
-		srcFile := filepath.Join(src, e.Name())
-		if err := runner.Run("cp", "-a", srcFile, dst+"/"); err != nil {
-			return fmt.Errorf("copying %s: %w", e.Name(), err)
-		}
-	}
-
-	// Fix SELinux context if restorecon is available.
-	_ = runner.Run("restorecon", "-R", dst)
-
-	fmt.Fprintf(os.Stdout, "  copied WiFi connections to %s\n", dst)
 	return nil
 }
 

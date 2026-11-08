@@ -134,6 +134,17 @@ func isSpaceConstrained(path string) bool {
 	return st.Type == tmpfsMagic || st.Type == overlayMagic
 }
 
+// installMountOpts are the mount options for the target root while installing.
+// btrfs compresses what is written: the install briefly holds several unpacked
+// copies of the image there (store, OCI export, deployment), and zstd roughly
+// halves them. Other filesystems mount with their defaults.
+func installMountOpts(filesystem string) string {
+	if filesystem == "btrfs" {
+		return "compress=zstd:1"
+	}
+	return ""
+}
+
 func prepareScratchDir(activeTargetMount string, liveISO bool) (string, error) {
 	scratchDir := "/var/fisherman-tmp"
 	if liveISO {
@@ -651,7 +662,7 @@ func main() {
 				fatal("setting up btrfs subvolumes: %v", err)
 			}
 		} else {
-			if err := disk.MountType(rootDev, targetMount, r.Filesystem, ""); err != nil {
+			if err := disk.MountType(rootDev, targetMount, r.Filesystem, installMountOpts(r.Filesystem)); err != nil {
 				fatal("mounting root: %v", err)
 			}
 		}
@@ -774,7 +785,7 @@ func main() {
 		SelinuxDisabled:       r.SelinuxDisabled,
 		UnifiedStorage:        r.UnifiedStorage,
 		ComposeFsBackend:      composeFsBackend,
-		GenericImage:          r.GenericImage,
+		GenericImage:          r.GenericImage || r.Bootloader == "grub-external",
 		Bootloader:            r.Bootloader,
 		KernelArgs:            r.KernelArgs,
 		Target:                activeTargetMount,
@@ -873,7 +884,7 @@ func main() {
 		if err := disk.WaitForPartitionNode(rootPart, disk.DefaultPartitionNodeTimeout); err != nil {
 			fatal("remounting root partition after retagging: %v", err)
 		}
-		if err := disk.MountWithRetry(rootPart, activeTargetMount, "", disk.DefaultMountAttempts, disk.DefaultMountBackoff); err != nil {
+		if err := disk.MountWithRetry(rootPart, activeTargetMount, installMountOpts(r.Filesystem), disk.DefaultMountAttempts, disk.DefaultMountBackoff); err != nil {
 			fatal("remounting root partition after retagging: %v", err)
 		}
 		// Remount EFI so that Plymouth/LUKS arg writes land on the real ESP
@@ -897,6 +908,13 @@ func main() {
 		if r.Encryption.Type == "tpm2-luks" {
 			unlockPassphrase = luksRecoveryKey
 		}
+		// A token bound to no PCR now, so that the first boot unlocks without typing a passphrase (a handheld
+		// has no keyboard at the unlock prompt). Between install and first boot the disk unlocks on this
+		// machine without checking the boot chain; the first-boot service below replaces the token.
+		if err := luks.EnrollTPM2(activeRootPart, unlockPassphrase, ""); err != nil {
+			progress.Info(fmt.Sprintf("Warning: could not enroll TPM2 now; the first boot will ask for the passphrase: %v", err))
+		}
+
 		// Enroll TPM2 on the FIRST BOOT of the installed system, not here:
 		// --tpm2-pcrs=7 seals against PCR 7 as measured in the live
 		// installer, but the installed system boots a different chain and
@@ -936,6 +954,17 @@ func main() {
 	progress.Info(fmt.Sprintf("Writing hostname: %s", r.Hostname))
 	if err := post.WriteHostname(activeTargetMount, r.Hostname); err != nil {
 		fatal("writing hostname: %v", err)
+	}
+
+	if err := post.WriteLocale(activeTargetMount, r.Locale, r.Keymap, r.Timezone); err != nil {
+		// Not fatal: the system boots with the image's defaults.
+		progress.Info(fmt.Sprintf("Warning: could not write locale, keymap or timezone: %v", err))
+	}
+
+	if r.FirstRun != "" {
+		if err := post.WriteFirstRun(activeTargetMount, r.DistroID, r.FirstRun); err != nil {
+			progress.Info(fmt.Sprintf("Warning: could not write the first-run marker: %v", err))
+		}
 	}
 
 	// Write /var fstab entry if a separate /var disk was used.
@@ -987,6 +1016,14 @@ func main() {
 		}
 	}
 
+	// ostree images without bootupd: bootc installed no bootloader, so install grub from the live system. This runs
+	// after the Plymouth and LUKS args are in the boot entries, because grub.cfg is rendered from them.
+	if !isManual && r.Bootloader == "grub-external" {
+		if err := install.InstallGrubExternal(activeTargetMount, r.DistroID); err != nil {
+			fatal("installing grub: %v", err)
+		}
+	}
+
 	// Copy Bluetooth pairings from live session so paired keyboards/mice
 	// reconnect on first boot without re-pairing. Non-fatal.
 	if err := post.CopyBluetoothPairings(activeTargetMount); err != nil {
@@ -996,6 +1033,15 @@ func main() {
 	// Copy WiFi connections from live session so network reconnects on first boot. Non-fatal.
 	if err := post.CopyWiFiConnections(activeTargetMount); err != nil {
 		progress.Info(fmt.Sprintf("Warning: could not copy WiFi connections: %v", err))
+	}
+
+	// Preload the Steam client for the new account while the live system is online, so the first Game Mode start
+	// does not download it behind a black screen. Never fatal: Steam downloads whatever is missing on its first start.
+	if r.PreloadSteam && r.User.Username != "" {
+		progress.Info(fmt.Sprintf("Preloading the Steam client for %s", r.User.Username))
+		if err := post.PreloadSteam(activeTargetMount, r.User.Username); err != nil {
+			progress.Info(fmt.Sprintf("Warning: Steam client not preloaded, it downloads on first start: %v", err))
+		}
 	}
 
 	// Generate friendly audio device names and hide useless outputs (S/PDIF,
@@ -1049,6 +1095,12 @@ func main() {
 	// flatpak appstream) so first boot is instant. Non-fatal.
 	progress.Substep("Pre-warming system caches for first boot")
 	post.WarmCaches(activeTargetMount)
+
+	// Keep a copy of this log in the installed system (/var/log/fisherman/install.log): the live session's copy is
+	// gone after the reboot. Last thing before the target is finalized read-only. Non-fatal.
+	if err := post.SaveInstallLog(activeTargetMount); err != nil {
+		progress.Info(fmt.Sprintf("Warning: could not save the install log: %v", err))
+	}
 
 	// ── Step 9: Finalize ─────────────────────────────────────────────────────
 	// bootc's --skip-finalize kept the target writable for post-install writes.

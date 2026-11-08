@@ -233,7 +233,9 @@ func BuildBootcArgs(opts Options, resolvedTargetImgref, installTarget string) []
 		// at /usr/lib/containers/storage).  No network pull needed.
 		args = append(args, "--source-imgref", "containers-storage:"+bareImageRef(resolvedTargetImgref))
 	}
-	if opts.Bootloader != "" && opts.Bootloader != "grub2" {
+	if opts.Bootloader == "grub-external" {
+		args = append(args, "--bootloader", "none") // fisherman installs grub itself afterwards
+	} else if opts.Bootloader != "" && opts.Bootloader != "grub2" {
 		args = append(args, "--bootloader", opts.Bootloader)
 	}
 	for _, k := range opts.KernelArgs {
@@ -459,9 +461,17 @@ func bootcViaContainer(opts Options) error {
 	// overlay when supported; an OCI source still needs disk-backed VFS when
 	// overlay is unavailable.
 	var nonComposefsRoot, nonComposefsRunRoot, nonComposefsDriver string
-	if !opts.ComposeFsBackend && (ociSource || storageSpaceConstrainedFn()) {
+	// The composefs backend pulls into the redirected root too: on live media the
+	// default store sits on the RAM-backed overlay, where podman cannot use its
+	// overlay driver at all ("'overlay' is not supported over overlayfs").
+	if (!opts.ComposeFsBackend && ociSource) || storageSpaceConstrainedFn() {
 		driver, reason := selectStorageDriverFn(scratch)
-		if driver == "overlay" || ociSource {
+		if driver != "overlay" && opts.ComposeFsBackend && !ociSource {
+			// vfs keeps a full copy of the filesystem per layer: a 450-layer
+			// image fills a 60 GiB disk. Stop now instead of half an hour in.
+			return fmt.Errorf("podman cannot use overlay storage on the target disk (%s); vfs would fill the disk", reason)
+		}
+		if driver == "overlay" || ociSource || opts.ComposeFsBackend {
 			progress.Substep(fmt.Sprintf("Redirecting podman storage to target disk with %s driver (%s)", driver, reason))
 			nonComposefsRoot = filepath.Join(scratch, "containers-root")
 			// Keep graphroot and runroot together.  Skopeo's containers-storage
@@ -491,7 +501,15 @@ func bootcViaContainer(opts Options) error {
 	useOciLayout := opts.ComposeFsBackend || nonComposefsRoot != ""
 
 	if opts.NeedsPull {
-		if err := pullImage(opts.SourceImgref, opts.LayerCount, nonComposefsRoot, nonComposefsRunRoot, nonComposefsDriver); err != nil {
+		// podman unpacks each layer into /var/tmp first; on live media that is
+		// RAM, so a multi-GB layer fails the pull part-way. Put it on the target disk.
+		restorePullTmp := func() {}
+		if nonComposefsRoot != "" {
+			restorePullTmp = overrideVarTmp(scratch)
+		}
+		err := pullImage(opts.SourceImgref, opts.LayerCount, nonComposefsRoot, nonComposefsRunRoot, nonComposefsDriver)
+		restorePullTmp()
+		if err != nil {
 			return fmt.Errorf("pulling image: %w", err)
 		}
 	} else {
@@ -569,7 +587,7 @@ func bootcViaContainer(opts Options) error {
 			"--root", containersRoot,
 			"--storage-driver", storageDriver,
 		)
-		if !opts.ComposeFsBackend {
+		if nonComposefsRunRoot != "" {
 			podmanArgs = append(podmanArgs, "--runroot", nonComposefsRunRoot)
 		}
 	}
@@ -578,6 +596,9 @@ func bootcViaContainer(opts Options) error {
 		"run", "--rm",
 		"--privileged",
 		"--pid=host",
+		// Images end with ENV SOURCE_DATE_EPOCH="" (reproducible builds); ostree and mkfs.fat
+		// refuse the empty value ("Failed to convert SOURCE_DATE_EPOCH").
+		"--unsetenv=SOURCE_DATE_EPOCH",
 		// The install container needs no network of its own (the image comes
 		// from a bind mount); host networking also avoids requiring netavark's
 		// nft/nftables stack, which minimal environments (initramfs) lack.
@@ -810,6 +831,9 @@ func bootcToDiskViaContainer(opts Options, diskDevice, filesystem string) (effec
 		"run", "--rm",
 		"--privileged",
 		"--pid=host",
+		// Images end with ENV SOURCE_DATE_EPOCH="" (reproducible builds); ostree and mkfs.fat
+		// refuse the empty value ("Failed to convert SOURCE_DATE_EPOCH").
+		"--unsetenv=SOURCE_DATE_EPOCH",
 		// Same rationale as bootcViaContainer: no container network needed,
 		// and host networking avoids netavark's nft dependency.
 		"--network", "host",

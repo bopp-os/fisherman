@@ -328,11 +328,11 @@ func CheckImageType(t string) []Problem {
 // CheckBootloader applies the bootloader rule.
 func CheckBootloader(b string) []Problem {
 	switch b {
-	case "", "grub2", "systemd":
+	case "", "grub2", "systemd", "grub-external":
 		return nil
 	default:
 		return []Problem{{"bootloader", CodeBootloaderUnsupported,
-			fmt.Sprintf("bootloader must be \"grub2\" or \"systemd\", got %q", b)}}
+			fmt.Sprintf("bootloader must be \"grub2\", \"systemd\" or \"grub-external\", got %q", b)}}
 	}
 }
 
