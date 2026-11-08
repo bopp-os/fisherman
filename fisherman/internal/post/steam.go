@@ -303,8 +303,14 @@ func PreloadSteam(target, username string) error {
 		return fmt.Errorf("finding deployment dir: %w", err)
 	}
 	bootstrap := filepath.Join(deployDir, steamBootstrapRel)
-	if _, err := os.Stat(bootstrap); err != nil {
+	info, err := os.Stat(bootstrap)
+	if err != nil {
 		fmt.Fprintf(os.Stdout, "  Steam preload skipped: the image has no %s\n", "/"+steamBootstrapRel)
+		return nil
+	}
+	if full, why := steamBootstrapIsFullClient(bootstrap, info.Size()); full {
+		fmt.Fprintf(os.Stdout, "  Steam preload skipped: the image's bootstrap is the whole client (%s); "+
+			"Steam unpacks it on its first start, offline\n", why)
 		return nil
 	}
 	uid, gid, passwdHome, err := lookupPasswd(filepath.Join(deployDir, "etc", "passwd"), username)
@@ -464,6 +470,31 @@ func PreloadSteam(target, username string) error {
 }
 
 var errSteamChecksum = errors.New("checksum mismatch")
+
+// SteamFullBootstrapSize is the size from which the image's Steam bootstrap counts as the whole client. Arch's
+// plain steam package ships a few-MB bootstrap that downloads the client; SteamOS's steam-jupiter ships the full
+// client (~400 MB packed), which Steam's launcher unpacks on the first start without a network. The image's
+// deck-first-boot check uses the same 100 MB line.
+const SteamFullBootstrapSize = 100 << 20
+
+// steamBootstrapIsFullClient reports whether the bootstrap already holds the client, so a preload would add nothing:
+// it is at least SteamFullBootstrapSize, or (checked only for a small file, where listing it is cheap) it contains
+// steamui.so. The second value says which.
+func steamBootstrapIsFullClient(path string, size int64) (bool, string) {
+	if size >= SteamFullBootstrapSize {
+		return true, humanBytes(size)
+	}
+	out, err := runner.Output("tar", "-tJf", path)
+	if err != nil {
+		return false, ""
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasSuffix(strings.TrimSpace(line), "/steamui.so") {
+			return true, "it contains " + strings.TrimPrefix(strings.TrimSpace(line), "./")
+		}
+	}
+	return false, ""
+}
 
 // steamPackageUnion lists the packages of a, then those of b that a does not name.
 func steamPackageUnion(a, b *SteamManifest) []SteamPackage {
